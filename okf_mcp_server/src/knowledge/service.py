@@ -81,6 +81,7 @@ def audit(tool: str, identity: Identity, **fields: Any) -> None:
     """Record one tool call: who, what and which documents were returned."""
     record = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "event": f"tool.{tool}",
         "tool": tool,
         "caller": identity.audit(),
         **fields,

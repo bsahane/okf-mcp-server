@@ -142,23 +142,26 @@ SOURCE_ACL_FILE = ".okf/access.json"
 
 
 def load_source_acls(source_root: Path) -> Dict[str, List[str]]:
-    """Per-file permissions recorded by a connector from the source system.
+    """Per-file permissions recorded by connectors from source systems.
 
-    `.okf/access.json` maps source-relative paths to principal lists. It is
-    rewritten on every sync, so permission changes and revocations in the
-    source reach the next build.
+    Every `.okf/access.json` under the source root maps paths relative to its
+    own folder to principal lists (each connector mirrors into a subfolder).
+    They are rewritten on every sync, so permission changes and revocations
+    in the source reach the next build.
 
     Raises:
-        ValueError: If the file is malformed.
+        ValueError: If a file is malformed.
     """
-    path = source_root / SOURCE_ACL_FILE
-    if not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        acls = {str(rel): normalize_access(rule) or [] for rel, rule in data.items()}
-    except (ValueError, TypeError, AttributeError) as e:
-        raise ValueError(f"{SOURCE_ACL_FILE}: {e}") from e
+    acls: Dict[str, List[str]] = {}
+    for path in sorted(source_root.rglob(SOURCE_ACL_FILE)):
+        base = path.parent.parent.relative_to(source_root).as_posix()
+        prefix = "" if base == "." else base + "/"
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for rel, rule in data.items():
+                acls[prefix + str(rel)] = normalize_access(rule) or []
+        except (ValueError, TypeError, AttributeError) as e:
+            raise ValueError(f"{path.relative_to(source_root)}: {e}") from e
     return acls
 
 

@@ -30,6 +30,65 @@ def _quiet_third_party() -> None:
     warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\..*")
 
 
+def audit_event(event: str, **fields: object) -> None:
+    """Append an ingestion event to OKF_AUDIT_LOG (if set) as one JSON line."""
+    if not settings.OKF_AUDIT_LOG:
+        return
+    from datetime import datetime, timezone
+
+    record = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+        "event": event,
+        **fields,
+    }
+    with open(settings.OKF_AUDIT_LOG, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, default=str) + "\n")
+
+
+def _sync_and_refresh(args: argparse.Namespace) -> int:
+    from okf_mcp_server.src.connectors import config as connectors
+
+    try:
+        cfg = connectors.load(args.connectors)
+    except (OSError, ValueError) as e:
+        print(f"ERROR   {e}", file=sys.stderr)
+        return 2
+    results = connectors.run(cfg, only=args.source)
+    failed = False
+    for result in results:
+        for rel, error in sorted(result.errors.items()):
+            print(f"FAILED  {result.source}/{rel}: {error}", file=sys.stderr)
+            failed = True
+        for rel, reason in sorted(result.skipped.items()):
+            print(f"SKIPPED {result.source}/{rel}: {reason}", file=sys.stderr)
+        s = result.summary()
+        print(
+            f"synced {s['source']}: {s['downloaded']} downloaded, {s['unchanged']} unchanged, "
+            f"{s['deleted']} deleted, {s['skipped']} skipped, {s['errors']} errors"
+        )
+        audit_event("ingest.sync", **s)
+    if args.command == "sync":
+        return 1 if failed else 0
+    if failed and not args.allow_failures:
+        print(
+            "NOT building: a source failed to sync (use --allow-failures)",
+            file=sys.stderr,
+        )
+        return 1
+    return main(
+        [
+            "--data-dir",
+            str(args.data_dir),
+            "build",
+            cfg["mirror"],
+            "--keep",
+            str(args.keep),
+        ]
+        + (["--allow-failures"] if args.allow_failures else [])
+        + (["--no-embeddings"] if args.no_embeddings else [])
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Entry point for the `okf-ingest` console script."""
     parser = argparse.ArgumentParser(prog="okf-ingest", description=__doc__)
@@ -85,6 +144,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="download the pinned embedding model for semantic search (~493 MB)",
     )
 
+    for name, text in (
+        ("sync", "mirror the sources in a connectors file (documents and permissions)"),
+        (
+            "refresh",
+            "sync, then build and publish a snapshot from the mirror (schedule this)",
+        ),
+    ):
+        c = sub.add_parser(name, help=text)
+        c.add_argument("connectors", type=Path, help="connectors.yaml")
+        c.add_argument(
+            "--source", action="append", help="only this source (repeatable)"
+        )
+        if name == "refresh":
+            c.add_argument("--allow-failures", action="store_true")
+            c.add_argument("--no-embeddings", action="store_true")
+            c.add_argument("--keep", type=int, default=3)
+
     e = sub.add_parser("eval", help="measure Hit@k against a question set")
     e.add_argument("questions", type=Path, help="YAML question file")
     e.add_argument("-k", type=int, default=5)
@@ -128,11 +204,24 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"semantic index: {report.embedded} passages embedded, "
                 f"{report.vectors_reused} reused ({report.embedding_model.split('@')[0]})"
             )
+        audit_event(
+            "ingest.build",
+            snapshot_id=report.snapshot_id,
+            published=report.published,
+            concepts=report.concepts,
+            passages=report.passages,
+            failures=len(report.failures),
+            skipped=len(report.skipped),
+            changes=len(report.changes),
+        )
         if report.pruned:
             print(
                 f"removed {len(report.pruned)} old snapshot(s): {', '.join(report.pruned)}"
             )
         return 0 if report.published and not report.failures else 1
+
+    if args.command in ("sync", "refresh"):
+        return _sync_and_refresh(args)
 
     if args.command == "fetch-model":
         from okf_mcp_server.src.knowledge.embed import (
