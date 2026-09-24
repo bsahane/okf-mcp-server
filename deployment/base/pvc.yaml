@@ -6,8 +6,9 @@ metadata:
     app: okf-mcp-server
     component: mcp-server
 spec:
-  # The ingestion job writes snapshots; the server mounts this read-only.
-  # Use ReadWriteMany if ingestion runs in a separate pod concurrently.
+  # The refresh CronJob writes snapshots (and the source mirror) here and the
+  # server reads them. ReadWriteOnce works when both run on one node; on a
+  # multi-node cluster use a ReadWriteMany storage class.
   accessModes:
     - ReadWriteOnce
   resources:

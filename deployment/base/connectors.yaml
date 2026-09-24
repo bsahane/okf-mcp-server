@@ -1,0 +1,27 @@
+# What the refresh CronJob mirrors. Secrets come from okf-connector-secrets.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: okf-connectors
+  labels:
+    app: okf-mcp-server
+    component: refresh
+data:
+  connectors.yaml: |
+    mirror: /app/data/mirror
+    sources:
+      - name: share
+        kind: fileshare
+        path: /sources/share
+        permissions: none
+    # - name: hr-sharepoint
+    #   kind: sharepoint
+    #   tenant_id: <tenant-id>
+    #   client_id: <app-client-id>
+    #   client_secret_env: OKF_SHAREPOINT_SECRET
+    #   site: contoso.sharepoint.com:/sites/HR
+    #   drive: Documents
+    # - name: ops-drive
+    #   kind: gdrive
+    #   service_account_key_env: OKF_GDRIVE_KEY_FILE
+    #   folder_id: <folder-id>

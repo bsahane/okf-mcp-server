@@ -1,0 +1,35 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: okf-mcp-server-config
+  labels:
+    app: okf-mcp-server
+    component: mcp-server
+data:
+  PYTHON_LOG_LEVEL: "INFO"
+  MCP_TRANSPORT_PROTOCOL: "http"
+  # MCP clients are not browsers; keep CORS off.
+  CORS_ENABLED: "false"
+  ENVIRONMENT: "production"
+  # Shared deployments authenticate every call and filter every result by the
+  # caller's groups (see README "Security model"). Documents without an
+  # access list are hidden.
+  ENABLE_AUTH: "true"
+  USE_EXTERNAL_BROWSER_AUTH: "false"
+  OKF_DEFAULT_ACCESS: "deny"
+  OKF_REQUIRED_AUDIENCE: "okf-mcp"
+  OKF_GROUPS_CLAIM: "groups"
+  OKF_SEMANTIC_SEARCH: "false"  # the server image has no torch; see README
+  # Your OIDC provider (Keycloak / Red Hat build of Keycloak, Entra ID, Okta, ...):
+  SSO_INTROSPECTION_MODE: "rfc7662"
+  SSO_INTROSPECTION_URL: "https://sso.example.com/realms/okf/protocol/openid-connect/token/introspect"
+  SSO_AUTHORIZATION_URL: "https://sso.example.com/realms/okf/protocol/openid-connect/auth"
+  SSO_TOKEN_URL: "https://sso.example.com/realms/okf/protocol/openid-connect/token"
+  SSO_CALLBACK_URL: "https://okf-mcp.apps.example.com/auth/callback/oidc"
+  SSO_SCOPES: "openid"
+  SSO_CLIENT_ID: "okf-mcp"
+  MCP_HOST_ENDPOINT: "https://okf-mcp.apps.example.com"
+  # PostgreSQL holds the template's OAuth state; provision it separately.
+  POSTGRES_HOST: "postgresql"
+  POSTGRES_PORT: "5432"
+  POSTGRES_DB: "okf"

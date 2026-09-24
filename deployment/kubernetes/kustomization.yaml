@@ -1,0 +1,22 @@
+# Plain Kubernetes (kind, k3s, OrbStack, EKS, GKE, AKS): the base without the
+# OpenShift-only BuildConfig, ImageStream and Route. Build and push the image
+# yourself and set it below; expose the Service with your Ingress/Gateway.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+images:
+  - name: okf-mcp-server
+    newName: okf-mcp-server
+    newTag: dev
+patches:
+  - target: {kind: Deployment, name: okf-mcp-server}
+    patch: |
+      - op: replace
+        path: /spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent
+  - target: {kind: CronJob, name: okf-refresh}
+    patch: |
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/imagePullPolicy
+        value: IfNotPresent

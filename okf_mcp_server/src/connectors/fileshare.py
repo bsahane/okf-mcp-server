@@ -9,6 +9,7 @@ ingest host. Use `permissions: none` to leave access to `_okf.yaml` rules.
 
 import grp
 import hashlib
+import os
 import pwd
 import shutil
 import stat
@@ -40,17 +41,37 @@ def _copy(src: Path, target: Path) -> None:
     shutil.copy2(src, target)
 
 
+def _walk(root: Path) -> Iterator[Path]:
+    """Files under `root`, following links (to files or folders) that stay inside it.
+
+    Kubernetes mounts ConfigMaps and Secrets as links into a hidden `..data`
+    folder, including links to folders when items have sub-paths. Hidden
+    names are skipped; real paths are tracked so link loops end.
+    """
+    seen = set()
+    for current, dirs, files in os.walk(root, followlinks=True):
+        real = os.path.realpath(current)
+        if real in seen or not Path(real).is_relative_to(root):
+            dirs[:] = []
+            continue
+        seen.add(real)
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in sorted(files):
+            path = Path(current) / name
+            if name.startswith(".") or not path.is_file():
+                continue
+            if not path.resolve().is_relative_to(root):
+                continue
+            yield path
+
+
 def list_items(root: Path, permissions: str = "posix") -> Iterator[RemoteItem]:
-    """Every regular file under `root` (symlinks are not followed)."""
+    """Every regular file under `root`; symlinks only if they resolve inside it."""
     root = root.resolve()
     if not root.is_dir():
         raise ValueError(f"file share not found or not a directory: {root}")
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink() or not path.is_file():
-            continue
+    for path in _walk(root):
         rel = path.relative_to(root).as_posix()
-        if any(part.startswith(".") for part in rel.split("/")):
-            continue
         st = path.stat()
         principals: Optional[List[str]] = (
             posix_principals(st) if permissions == "posix" else None

@@ -132,9 +132,12 @@ class TestFileShare:
         os.chmod(share / "team" / "group.md", 0o640)
         os.chmod(share / "open.md", 0o644)
         os.chmod(share / "private.md", 0o600)
-        os.symlink(share / "open.md", share / "link.md")
+        os.symlink(share / "open.md", share / "link.md")  # inside the share: followed
+        outside = tmp_path / "outside.md"
+        outside.write_text("# Out\n\nsecret\n")
+        os.symlink(outside, share / "escape.md")  # outside the share: skipped
         items = {i.path: i for i in list_items(share)}
-        assert set(items) == {"team/group.md", "open.md", "private.md"}
+        assert set(items) == {"team/group.md", "open.md", "private.md", "link.md"}
         assert "*" in items["open.md"].principals
         assert any(p.startswith("group:") for p in items["team/group.md"].principals)
         assert "*" not in items["team/group.md"].principals
@@ -152,6 +155,31 @@ class TestFileShare:
     def test_missing_share(self, tmp_path):
         with pytest.raises(ValueError, match="not found"):
             list(list_items(tmp_path / "nope"))
+
+    def test_kubernetes_configmap_layout(self, tmp_path):
+        """ConfigMap volumes: visible names (files and folders) link into ..data."""
+        share = tmp_path / "cm"
+        data = share / "..2026_09_25" / "finance"
+        data.mkdir(parents=True)
+        (data / "travel.md").write_text("# Travel\n\ntext\n")
+        (share / "..2026_09_25" / "policy.md").write_text("# Policy\n\ntext\n")
+        os.symlink("..2026_09_25", share / "..data")
+        os.symlink("..data/finance", share / "finance")  # folder link
+        os.symlink("..data/policy.md", share / "policy.md")  # file link
+        assert sorted(i.path for i in list_items(share, "none")) == [
+            "finance/travel.md",
+            "policy.md",
+        ]
+
+    def test_link_loops_and_escapes_end(self, tmp_path):
+        share = tmp_path / "share"
+        (share / "a").mkdir(parents=True)
+        (share / "a" / "doc.md").write_text("# D\n\ntext\n")
+        os.symlink(share, share / "a" / "loop")  # back to the root
+        (tmp_path / "elsewhere").mkdir()
+        (tmp_path / "elsewhere" / "x.md").write_text("# X\n\nsecret\n")
+        os.symlink(tmp_path / "elsewhere", share / "escape")  # outside the share
+        assert [i.path for i in list_items(share, "none")] == ["a/doc.md"]
 
 
 class TestRetries:
@@ -541,3 +569,25 @@ sources:
         assert cli_main(["--data-dir", str(tmp_path / "d"), "refresh", str(cfg)]) == 1
         assert "NOT building" in capsys.readouterr().err
         assert cli_main(["--data-dir", str(tmp_path / "d"), "sync", str(cfg)]) == 1
+
+
+def test_source_default_access_and_okf_config(tmp_path):
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "a.md").write_text("# A\n\ntext\n")
+    rules = tmp_path / "_okf.yaml"
+    rules.write_text("types: {share/: Policy}\n")
+    cfg_file = tmp_path / "connectors.yaml"
+    cfg_file.write_text(
+        f"mirror: {tmp_path / 'mirror'}\nokf_config: {rules}\nsources:\n"
+        f"  - {{name: share, kind: fileshare, path: {share}, permissions: none, access: [group:HR]}}\n"
+    )
+    cfg = connectors.load(cfg_file)
+    connectors.run(cfg)
+    assert (tmp_path / "mirror" / "_okf.yaml").read_text() == rules.read_text()
+    assert load_source_acls(tmp_path / "mirror") == {"share/a.md": ["group:hr"]}
+    cfg_file.write_text(
+        f"mirror: /m\nokf_config: {tmp_path / 'nope.yaml'}\nsources: [{{name: s, kind: fileshare, path: /x}}]\n"
+    )
+    with pytest.raises(ValueError, match="okf_config not found"):
+        connectors.load(cfg_file)

@@ -1,0 +1,88 @@
+# Scheduled refresh: sync sources into the mirror, then build and publish a
+# snapshot. The server picks up the new snapshot on its next request.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: okf-refresh
+  labels:
+    app: okf-mcp-server
+    component: refresh
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 21600
+      template:
+        metadata:
+          labels:
+            app: okf-mcp-server
+            component: refresh
+        spec:
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: refresh
+              # Markdown/text sources work with the server image; PDF and
+              # Office sources need the ingest image (Containerfile, EXTRAS=ingest).
+              image: okf-mcp-server:latest
+              imagePullPolicy: Always
+              command:
+                - /app/.venv/bin/python
+                - -m
+                - okf_mcp_server.src.ingest.cli
+                - --data-dir
+                - /app/data/okf
+                - refresh
+                - /etc/okf/connectors.yaml
+                - --no-embeddings
+              env:
+                - name: OKF_AUDIT_LOG
+                  value: /app/data/ingest-audit.jsonl
+                - name: HOME
+                  value: /tmp
+              envFrom:
+                - secretRef:
+                    name: okf-connector-secrets
+                    optional: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: knowledge
+                  mountPath: /app/data
+                - name: connectors
+                  mountPath: /etc/okf
+                  readOnly: true
+                - name: sources
+                  mountPath: /sources/share
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  memory: "256Mi"
+                  cpu: "100m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "1"
+          volumes:
+            - name: knowledge
+              persistentVolumeClaim:
+                claimName: okf-mcp-server-knowledge
+            - name: connectors
+              configMap:
+                name: okf-connectors
+            # Replace with your file share (NFS/SMB PV claim); empty by default.
+            - name: sources
+              emptyDir: {}
+            - name: tmp
+              emptyDir: {}

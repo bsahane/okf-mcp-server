@@ -1,11 +1,13 @@
 """`connectors.yaml`: which sources to mirror, and running the sync.
 
     mirror: /var/lib/okf/mirror          # build source; one subfolder per source
+    okf_config: /etc/okf/_okf.yaml       # optional: copied to <mirror>/_okf.yaml
     sources:
       - name: finance-share
         kind: fileshare
         path: /Volumes/Finance
         permissions: posix               # or none (use _okf.yaml rules)
+        access: [group:finance]          # optional: for items without source permissions
       - name: hr-sharepoint
         kind: sharepoint
         tenant_id: 00000000-0000-0000-0000-000000000000
@@ -26,6 +28,7 @@ from the file itself.
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -34,6 +37,7 @@ import yaml
 
 from okf_mcp_server.src.connectors import fileshare, gdrive, sharepoint
 from okf_mcp_server.src.connectors.base import RemoteItem, SyncResult, sync
+from okf_mcp_server.src.knowledge.access import normalize_access
 
 KINDS = ("fileshare", "sharepoint", "gdrive")
 _NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
@@ -74,7 +78,17 @@ def load(path: Path) -> Dict[str, Any]:
         missing = [f for f in required if not source.get(f)]
         if missing:
             raise ValueError(f"{path.name}: {name}: missing {', '.join(missing)}")
+        if "access" in source:
+            try:
+                source["access"] = normalize_access(source["access"])
+            except (ValueError, TypeError, AttributeError) as e:
+                raise ValueError(f"{path.name}: {name}: access: {e}") from e
     config["mirror"] = str(Path(str(config["mirror"])).expanduser())
+    if (
+        config.get("okf_config")
+        and not Path(str(config["okf_config"])).expanduser().is_file()
+    ):
+        raise ValueError(f"{path.name}: okf_config not found: {config['okf_config']}")
     return config
 
 
@@ -125,6 +139,12 @@ def run(
     reported with an error, so one outage does not delete that content.
     """
     mirror = Path(config["mirror"])
+    mirror.mkdir(parents=True, exist_ok=True)
+    if config.get("okf_config"):
+        # Build rules (types, lifecycle, access prefixes like "hr-share/") for the mirror.
+        shutil.copyfile(
+            Path(str(config["okf_config"])).expanduser(), mirror / "_okf.yaml"
+        )
     results = []
     own_client = client is None
     client = client or httpx.Client(timeout=60)
@@ -139,6 +159,11 @@ def run(
                 failed.errors["<listing>"] = f"{type(e).__name__}: {e}"
                 results.append(failed)
                 continue
+            default = source.get("access")
+            if default is not None:
+                for item in items:
+                    if item.principals is None:
+                        item.principals = list(default)
             results.append(sync(source["name"], mirror / source["name"], items))
     finally:
         if own_client:

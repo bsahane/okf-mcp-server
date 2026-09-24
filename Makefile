@@ -106,17 +106,13 @@ deploy: ## Deploy to target (usage: make deploy openshift)
 		echo "Using namespace: $(NAMESPACE)"; \
 		echo "Switching to namespace..."; \
 		oc project $(NAMESPACE) || (echo "Error: Cannot switch to namespace '$(NAMESPACE)'. Check permissions." && exit 1); \
-		echo "Updating namespace references..."; \
-		sed -i.bak "s|NAMESPACE_PLACEHOLDER|$(NAMESPACE)|g" deployment/openshift/deployment.yaml; \
-		sed -i.bak "s|namespace: okf-mcp-server|namespace: $(NAMESPACE)|g" deployment/openshift/kustomization.yaml; \
 		echo "Creating BuildConfig and ImageStream..."; \
-		oc apply -f deployment/openshift/buildconfig.yaml; \
-		oc apply -f deployment/openshift/imagestream.yaml; \
+		oc apply -n $(NAMESPACE) -f deployment/openshift/buildconfig.yaml; \
+		oc apply -n $(NAMESPACE) -f deployment/openshift/imagestream.yaml; \
 		echo "Building container image from source..."; \
-		oc start-build okf-mcp-server --from-dir=. --follow || (mv deployment/openshift/deployment.yaml.bak deployment/openshift/deployment.yaml 2>/dev/null; mv deployment/openshift/kustomization.yaml.bak deployment/openshift/kustomization.yaml 2>/dev/null; exit 1); \
+		oc start-build -n $(NAMESPACE) okf-mcp-server --from-dir=. --follow || exit 1; \
 		echo "Deploying resources to OpenShift..."; \
-		oc apply -k deployment/openshift/ || (mv deployment/openshift/deployment.yaml.bak deployment/openshift/deployment.yaml 2>/dev/null; mv deployment/openshift/kustomization.yaml.bak deployment/openshift/kustomization.yaml 2>/dev/null; exit 1); \
-		rm -f deployment/openshift/deployment.yaml.bak deployment/openshift/kustomization.yaml.bak; \
+		oc apply -n $(NAMESPACE) -k deployment/openshift/ || exit 1; \
 		echo "Deployment complete!"; \
 		echo "Checking deployment status..."; \
 		oc get pods -l app=okf-mcp-server; \
