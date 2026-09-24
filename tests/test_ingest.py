@@ -243,6 +243,29 @@ class TestBuild:
         assert build(corpus, data).published
         assert not stale.exists()
 
+    def test_old_snapshots_are_pruned(self, corpus, tmp_path):
+        data = tmp_path / "data"
+        ids = []
+        for day in range(1, 6):
+            report = build(
+                corpus, data, now=datetime(2026, 1, day, tzinfo=timezone.utc)
+            )
+            ids.append(report.snapshot_id)
+        remaining = sorted(p.name for p in (data / "snapshots").iterdir())
+        assert remaining == ids[-3:] and current_snapshot(data).id == ids[-1]
+        assert build(corpus, data, keep=2).pruned == ids[-3:-1]
+        with pytest.raises(ValueError, match="at least 2"):
+            build(corpus, data, keep=1)
+
+    def test_failed_build_prunes_nothing(self, corpus, tmp_path):
+        data = tmp_path / "data"
+        for day in range(1, 4):
+            build(corpus, data, now=datetime(2026, 1, day, tzinfo=timezone.utc))
+        (corpus / "blank.md").write_text("")
+        report = build(corpus, data, keep=2)
+        assert not report.published and report.pruned == []
+        assert len(list((data / "snapshots").iterdir())) == 3
+
     def test_invalid_config_timestamp_blocks_publish(self, corpus, tmp_path):
         cfg = corpus / "_okf.yaml"
         cfg.write_text(cfg.read_text().replace("2099-01-01T00:00:00Z", "next spring"))

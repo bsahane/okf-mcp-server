@@ -57,6 +57,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="show Docling/OCR/model logs and progress bars",
     )
     b.add_argument(
+        "--keep",
+        type=int,
+        default=3,
+        help="snapshots to keep after publishing, including the new one (min 2)",
+    )
+    b.add_argument(
         "--allow-failures",
         action="store_true",
         help="publish even if some files failed to extract (failures.json lists them)",
@@ -81,7 +87,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         try:
             report = build(
-                args.source, args.data_dir, args.artifacts_path, args.allow_failures
+                args.source,
+                args.data_dir,
+                args.artifacts_path,
+                args.allow_failures,
+                keep=args.keep,
             )
         except ValueError as e:
             print(f"ERROR   {e}", file=sys.stderr)
@@ -102,6 +112,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"{report.passages} passages, {report.reused} extractions reused, "
             f"{len(report.failures)} failures, {len(report.skipped)} skipped"
         )
+        if report.pruned:
+            print(
+                f"removed {len(report.pruned)} old snapshot(s): {', '.join(report.pruned)}"
+            )
         return 0 if report.published and not report.failures else 1
 
     if args.command == "suggest-config":

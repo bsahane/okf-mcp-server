@@ -68,6 +68,7 @@ class BuildReport:
     failures: Dict[str, str] = field(default_factory=dict)
     problems: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    pruned: List[str] = field(default_factory=list)
     skipped: Dict[str, str] = field(default_factory=dict)
     changes: List[Tuple[str, str]] = field(default_factory=list)
 
@@ -356,13 +357,19 @@ def build(
     artifacts_path: Optional[Path] = None,
     allow_failures: bool = False,
     now: Optional[datetime] = None,
+    keep: int = 3,
 ) -> BuildReport:
     """Ingest `source_root` into a new snapshot and publish it if it validates.
+
+    After publishing, only the `keep` newest snapshots are kept (at least 2,
+    so the previous snapshot always survives).
 
     Raises:
         ValueError: For a missing source, a data directory inside the source,
             an invalid `_okf.yaml`, or another build already running.
     """
+    if keep < 2:
+        raise ValueError("keep must be at least 2 so the previous snapshot survives")
     source_root = source_root.resolve()
     if not source_root.is_dir():
         raise ValueError(f"source directory not found: {source_root}")
@@ -375,7 +382,29 @@ def build(
         # Holding the lock, any staging folder belongs to an interrupted build.
         for stale in (data_dir / "snapshots").glob(".building-*"):
             shutil.rmtree(stale, ignore_errors=True)
-        return _build(source_root, data_dir, artifacts_path, allow_failures, now)
+        report = _build(source_root, data_dir, artifacts_path, allow_failures, now)
+        if report.published:
+            report.pruned = prune_snapshots(data_dir, keep)
+        return report
+
+
+def prune_snapshots(data_dir: Path, keep: int) -> List[str]:
+    """Delete all but the `keep` newest snapshots; never the published one.
+
+    Snapshot IDs start with a UTC timestamp, so name order is age order.
+    Safe while the server runs: requests resolve `current` once, and open
+    files stay readable after deletion on POSIX systems.
+    """
+    current = current_snapshot(data_dir).id
+    ids = sorted(
+        p.name
+        for p in (data_dir / "snapshots").iterdir()
+        if p.is_dir() and not p.name.startswith(".")
+    )
+    doomed = [i for i in ids[:-keep] if i != current]
+    for snapshot_id in doomed:
+        shutil.rmtree(data_dir / "snapshots" / snapshot_id, ignore_errors=True)
+    return doomed
 
 
 def _build(
