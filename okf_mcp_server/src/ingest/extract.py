@@ -11,6 +11,9 @@ from typing import Any, Dict, List, Optional
 
 from okf_mcp_server.src.knowledge.bundle import FENCE, HEADING, split_sections
 
+# Bump when extraction output changes, so rebuilds re-extract unchanged files
+# instead of reusing stale results (2: Docling formulas kept as text).
+EXTRACTOR_VERSION = 2
 NATIVE_SUFFIXES = {".md", ".markdown", ".txt"}
 DOCLING_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".csv"}
 SUPPORTED_SUFFIXES = NATIVE_SUFFIXES | DOCLING_SUFFIXES

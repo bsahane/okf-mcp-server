@@ -667,3 +667,69 @@ def test_build_is_quiet_by_default_and_verbose_on_request(
             "TQDM_DISABLE",
         ):
             os.environ.pop(var, None)
+
+
+class TestRetrievalGaps:
+    """Fixes from the first real pilot question (DeepSeek-R1 reward design)."""
+
+    def test_one_result_per_section(self, tmp_path, corpus_writer):
+        long_section = "\n\n".join(
+            f"Reward paragraph {i}. " + "reward " * 150 for i in range(6)
+        )
+        src = corpus_writer(
+            tmp_path / "s",
+            {
+                "paper.md": f"# Paper\n\n## Rewards\n\n{long_section}\n\n## Other reward notes\n\nA reward aside.\n",
+            },
+        )
+        data = tmp_path / "data"
+        build(src, data)
+        with SearchIndex(current_snapshot(data).index) as index:
+            results = index.search("reward", limit=5)
+        sections = [r["section"] for r in results]
+        assert len(sections) == len(set(sections)) == 2
+
+    def test_math_italic_text_matches_plain_query(self, tmp_path, corpus_writer):
+        src = corpus_writer(
+            tmp_path / "s",
+            {"f.md": "# F\n\n𝑅𝑒𝑤𝑎𝑟𝑑 rule = 𝑅𝑒𝑤𝑎𝑟𝑑 acc; eﬃcient training.\n"},
+        )
+        data = tmp_path / "data"
+        build(src, data)
+        with SearchIndex(current_snapshot(data).index) as index:
+            hit = index.search("reward efficient")[0]
+        assert (
+            "𝑅𝑒𝑤𝑎𝑟𝑑" in hit["excerpt"]
+        )  # displayed text keeps the original characters
+        with SearchIndex(current_snapshot(data).index) as index:
+            assert index.search("𝑅𝑒𝑤𝑎𝑟𝑑")  # and a math-italic query still matches
+
+    def test_section_level_evaluation(self, published, tmp_path):
+        questions = tmp_path / "q.yaml"
+        questions.write_text(
+            "questions:\n"
+            "  - {question: hotel limit London, expected: ['policies/travel#hotels']}\n"
+            "  - {question: meal per diem, expected: ['policies/travel#meals', 'notes#missing']}\n"
+            "  - {question: hotel limit, expected: ['policies/travel#no-such-section']}\n"
+        )
+        result = evaluate(published, questions, k=5)
+        rows = result["questions"]
+        assert rows[0]["hit"] and rows[0]["rank"] == 1
+        assert rows[1]["hit"] and rows[1]["all_found"] is False
+        assert not rows[2]["hit"]
+        assert result["hit_at_5"] == pytest.approx(2 / 3)
+        assert 0 < result["mrr"] <= 1 and result["all_found"] == pytest.approx(1 / 3)
+
+    def test_extractor_upgrade_forces_re_extraction(
+        self, corpus, tmp_path, monkeypatch
+    ):
+        from okf_mcp_server.src.ingest import extract as extract_module
+
+        data = tmp_path / "data"
+        build(corpus, data)
+        assert build(corpus, data).reused == 4
+        monkeypatch.setattr(
+            pipeline, "EXTRACTOR_VERSION", extract_module.EXTRACTOR_VERSION + 1
+        )
+        assert build(corpus, data).reused == 0
+        assert build(corpus, data).reused == 4

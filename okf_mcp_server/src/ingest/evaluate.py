@@ -5,12 +5,16 @@ Question file (YAML)::
     questions:
       - question: What is the hotel limit in London?
         expected: [policies/travel-policy]   # concept IDs holding the evidence
+      - question: What reward does the model use?
+        expected: [papers/r1#2-2-reward-design, papers/r1#3-1-model-based-rewards]
       - question: Who approves exceptions to the parking rule?
         expected: []                          # no answer in the corpus
 
-Hit@k is the fraction of answerable questions with at least one expected
-concept in the top k results. For questions with several expected concepts,
-`all_found` separately reports whether every one was retrieved.
+An expected entry is a concept ID, or `concept#section` to require that exact
+section (section slugs are listed by `get_knowledge`). Hit@k is the fraction
+of answerable questions with at least one expected entry in the top k
+results; `all_found` reports whether every entry was retrieved, and `rank` is
+the position of the first match (for MRR).
 """
 
 from pathlib import Path
@@ -34,14 +38,28 @@ def evaluate(data_dir: Path, questions_file: Path, k: int = 5) -> Dict[str, Any]
             ]
             results = index.search(str(q["question"]), limit=k)
             found = [r["concept_id"] for r in results]
+            keys = [f"{r['concept_id']}#{r['section']}" for r in results]
+
+            def matched(entry: str) -> bool:
+                return entry in keys if "#" in entry else entry in found
+
+            rank = next(
+                (
+                    i + 1
+                    for i, key in enumerate(keys)
+                    if any(key == e or key.split("#")[0] == e for e in expected)
+                ),
+                None,
+            )
             rows.append(
                 {
                     "question": q["question"],
                     "expected": expected,
                     "retrieved": list(dict.fromkeys(found)),
                     "answerable": bool(expected),
-                    "hit": any(e in found for e in expected),
-                    "all_found": all(e in found for e in expected)
+                    "hit": any(matched(e) for e in expected),
+                    "rank": rank,
+                    "all_found": all(matched(e) for e in expected)
                     if expected
                     else None,
                     "flags": list(
@@ -62,5 +80,14 @@ def evaluate(data_dir: Path, questions_file: Path, k: int = 5) -> Dict[str, Any]
         "answerable": len(answerable),
         "unanswerable": len(rows) - len(answerable),
         f"hit_at_{k}": hits / len(answerable) if answerable else None,
+        "hit_at_1": sum(r["rank"] == 1 for r in answerable) / len(answerable)
+        if answerable
+        else None,
+        "mrr": sum(1 / r["rank"] for r in answerable if r["rank"]) / len(answerable)
+        if answerable
+        else None,
+        "all_found": sum(bool(r["all_found"]) for r in answerable) / len(answerable)
+        if answerable
+        else None,
         "questions": rows,
     }

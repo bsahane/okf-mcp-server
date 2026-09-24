@@ -9,6 +9,7 @@ index preserves citations.
 import json
 import re
 import sqlite3
+import unicodedata
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
@@ -24,7 +25,21 @@ from okf_mcp_server.src.knowledge.bundle import (
 
 MAX_PASSAGE_CHARS = 1500
 MAX_LIMIT = 20
+# Candidate passages fetched per requested result, before keeping one per section.
+CANDIDATES_PER_RESULT = 5
+TOKENIZE = "unicode61 remove_diacritics 2"
 _TOKEN = re.compile(r"\w+", re.UNICODE)
+
+
+def search_form(text: str) -> str:
+    """Text as the index sees it: NFKC-folded, so math italics and ligatures match.
+
+    PDFs encode variables as Unicode math letters (`𝑅𝑒𝑤𝑎𝑟𝑑`) and words with
+    ligatures (`ﬁ`). Folding is applied to indexed text and queries only;
+    displayed excerpts keep the original characters.
+    """
+    return unicodedata.normalize("NFKC", text)
+
 
 _SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -43,12 +58,15 @@ CREATE TABLE passages (
     source_id TEXT,
     source_uri TEXT,
     source_revision TEXT,
-    location TEXT NOT NULL
+    location TEXT NOT NULL,
+    fts_title TEXT NOT NULL,
+    fts_section TEXT NOT NULL,
+    fts_text TEXT NOT NULL
 );
 CREATE VIRTUAL TABLE passages_fts USING fts5(
-    title, section_title, text,
+    fts_title, fts_section, fts_text,
     content='passages', content_rowid='id',
-    tokenize='unicode61 remove_diacritics 2'
+    tokenize='{tokenize}'
 );
 """
 
@@ -141,7 +159,7 @@ def build_index(
     conn = sqlite3.connect(db_path)
     try:
         check_fts5(conn)
-        conn.executescript(_SCHEMA)
+        conn.executescript(_SCHEMA.format(tokenize=TOKENIZE))
         conn.execute("INSERT INTO meta VALUES ('snapshot_id', ?)", (snapshot_id,))
         count = 0
         for concept_id, path in iter_concepts(bundle_root):
@@ -158,7 +176,8 @@ def build_index(
                     conn.execute(
                         "INSERT INTO passages (concept_id, section, section_title, text, title,"
                         " type, tags, status, stale_after, verified, source_id, source_uri,"
-                        " source_revision, location) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " source_revision, location, fts_title, fts_section, fts_text)"
+                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             concept_id,
                             section.slug,
@@ -174,6 +193,9 @@ def build_index(
                             source.get("resource"),
                             fm.get("source_revision"),
                             json.dumps(locations.get(section.slug, {})),
+                            search_form(str(fm.get("title") or concept_id)),
+                            search_form(section.title),
+                            search_form(text),
                         ),
                     )
                     count += 1
@@ -256,8 +278,12 @@ class SearchIndex:
         tags: Sequence[str] = (),
         limit: int = 5,
     ) -> List[Dict[str, Any]]:
-        """Return up to `limit` ranked passages with trust and lifecycle signals."""
-        match = fts_query(query)
+        """Return up to `limit` ranked sections with trust and lifecycle signals.
+
+        Each section appears once, represented by its best-scoring passage, so
+        a long section split into several passages cannot fill every slot.
+        """
+        match = fts_query(search_form(query))
         if not match:
             return []
         sql = [
@@ -274,9 +300,19 @@ class SearchIndex:
             params.append(tag)
         # Deprecated concepts stay retrievable (flagged) but rank after current ones.
         sql.append("ORDER BY p.status = 'deprecated', score LIMIT ?")
-        params.append(max(1, min(int(limit), MAX_LIMIT)))
-        results = []
+        limit = max(1, min(int(limit), MAX_LIMIT))
+        # ponytail: fixed candidate pool; a section with more passages than the
+        # pool could still crowd out others. Use a window query if that shows up.
+        params.append(limit * CANDIDATES_PER_RESULT)
+        results: List[Dict[str, Any]] = []
+        seen = set()
         for row in self.conn.execute(" ".join(sql), params):
+            key = (row["concept_id"], row["section"])
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(results) == limit:
+                break
             fm = {
                 "status": row["status"],
                 "stale_after": json.loads(row["stale_after"]),

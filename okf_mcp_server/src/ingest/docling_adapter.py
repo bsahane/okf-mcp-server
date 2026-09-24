@@ -6,6 +6,7 @@ extraction metadata. Processing is local. To run offline, pre-download the
 models and set `DOCLING_ARTIFACTS_PATH` (or pass `--artifacts-path`).
 """
 
+import unicodedata
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -15,6 +16,7 @@ from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import (
     DocItemLabel,
+    FormulaItem,
     GroupItem,
     ListItem,
     SectionHeaderItem,
@@ -114,6 +116,12 @@ def extract_with_docling(
             parts.append(item.export_to_markdown(doc=doc))
         elif isinstance(item, ListItem):
             parts.append(f"- {item.text}")
+        elif isinstance(item, FormulaItem):
+            # Without formula enrichment `text` is empty; `orig` holds the raw
+            # characters, often Unicode math italics, folded here to plain text.
+            formula = item.text or unicodedata.normalize("NFKC", item.orig or "")
+            if formula.strip():
+                parts.append(f"`{' '.join(formula.split())}`")
         elif isinstance(item, TextItem):
             if item.label in (DocItemLabel.PAGE_HEADER, DocItemLabel.PAGE_FOOTER):
                 continue

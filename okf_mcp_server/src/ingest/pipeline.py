@@ -25,6 +25,7 @@ from typing import Any, Dict, Iterator, List, Optional, Tuple
 import yaml
 
 from okf_mcp_server.src.ingest.extract import (
+    EXTRACTOR_VERSION,
     SUPPORTED_SUFFIXES,
     ExtractedDoc,
     ExtractedSection,
@@ -488,7 +489,12 @@ def _build(
             renamed.add(renamed_from[0])
             prior = renamed_from[1]
         doc: Optional[ExtractedDoc] = None
-        if prev and prior and prior["revision"] == revision:
+        if (
+            prev
+            and prior
+            and prior["revision"] == revision
+            and prior.get("extractor_version") == EXTRACTOR_VERSION
+        ):
             old = prev.extraction / f"{renamed_from[0] if renamed_from else sid}.json"
             if old.is_file():
                 doc = _doc_from_record(json.loads(old.read_text(encoding="utf-8")))
@@ -560,6 +566,7 @@ def _build(
             "concept_id": cid,
             "revision": revision,
             "extractor": doc.extractor,
+            "extractor_version": EXTRACTOR_VERSION,
             "generated_at": generated_at,
         }
         link = f"[{fm['title']}](/{cid}.md)"

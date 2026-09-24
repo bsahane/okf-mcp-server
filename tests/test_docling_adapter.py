@@ -125,3 +125,43 @@ def test_ocr_only_when_a_page_has_no_text_layer(tmp_path):
     assert needs_ocr(tmp_path / "notes.docx") is False
     (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 garbage")
     assert needs_ocr(tmp_path / "broken.pdf") is True
+
+
+def test_formulas_without_latex_keep_folded_raw_text(tmp_path, monkeypatch):
+    from docling.datamodel.base_models import ConversionStatus
+    from docling_core.types.doc import DocItemLabel, FormulaItem, SectionHeaderItem
+
+    from okf_mcp_server.src.ingest import docling_adapter
+
+    heading = SectionHeaderItem(
+        self_ref="#/texts/0",
+        label=DocItemLabel.SECTION_HEADER,
+        orig="Reward",
+        text="Reward",
+        level=1,
+    )
+    formula = FormulaItem(
+        self_ref="#/texts/1",
+        label=DocItemLabel.FORMULA,
+        orig="𝑅𝑒𝑤𝑎𝑟𝑑 rule = 𝑅𝑒𝑤𝑎𝑟𝑑 acc (4)",
+        text="",
+    )
+    empty = FormulaItem(
+        self_ref="#/texts/2", label=DocItemLabel.FORMULA, orig="", text=""
+    )
+    result = SimpleNamespace(
+        status=ConversionStatus.SUCCESS,
+        document=SimpleNamespace(
+            iterate_items=lambda **kwargs: iter(
+                [(heading, 1), (formula, 1), (empty, 1)]
+            ),
+            export_to_dict=lambda: {},
+        ),
+    )
+    monkeypatch.setattr(
+        docling_adapter,
+        "_converter",
+        lambda *_: SimpleNamespace(convert=lambda path: result),
+    )
+    doc = extract_with_docling(tmp_path / "paper.pdf")
+    assert doc.sections[0].markdown == "`Reward rule = Reward acc (4)`"

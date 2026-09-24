@@ -201,6 +201,8 @@ OCR runs only for PDFs where some page has no embedded text layer, which is a re
 
 Very large embedded images (above about 179 megapixels) are refused by Pillow's decompression-bomb protection and the file fails; around 90 megapixels Pillow only warns.
 
+A reproducible synthetic benchmark lives in [samples/northwind](samples/northwind/README.md).
+
 ### Offline and air-gapped use
 
 Docling downloads layout models on its first PDF conversion. To run without network access, pre-download them and set `DOCLING_ARTIFACTS_PATH`, or pass `okf-ingest build --artifacts-path <dir>`.
@@ -236,7 +238,7 @@ Example `search_knowledge` result (trimmed):
 Behaviour worth knowing:
 
 - **Errors are real MCP errors.** Invalid input returns `isError: true`, and so does a path outside the bundle. An empty search is a *successful* result with no evidence, so the assistant can say it does not know.
-- **Search is keyword-based (SQLite FTS5, BM25).** Exact codes such as `SKU-4471` match reliably. Paraphrases depend on shared words; measure with `okf-ingest eval` before adding embeddings.
+- **Search is keyword-based (SQLite FTS5, BM25), one result per section.** Exact codes such as `SKU-4471` match reliably, and Unicode math letters and ligatures from PDFs match plain words. Words must match exactly (no stemming), so assistants should search with key terms and try variants; the tool's instructions tell them so. Measure with `okf-ingest eval`, which accepts `concept#section` expectations, before adding embeddings.
 - **Pagination is snapshot-bound.** Once a new snapshot is published, older cursors ask the client to restart from the first page, so pages from two revisions are never mixed.
 - **Excerpts are capped.** Search excerpts are at most 1,500 characters. When `excerpt_truncated` is true (for example, one oversized table row), read the section with `get_knowledge` and follow its cursor.
 
