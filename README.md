@@ -354,10 +354,12 @@ data/
 
 ```bash
 docker build -t <registry>/okf-mcp-server:<tag> -f Containerfile .                  # server
-docker build -t <registry>/okf-mcp-server-ingest:<tag> --build-arg EXTRAS=ingest .   # PDF/Office ingestion
+docker build -t <registry>/okf-mcp-server-ingest:<tag> --build-arg EXTRAS=ingest -f Containerfile .  # PDF/Office ingestion
 kubectl apply -k deployment/kubernetes      # plain Kubernetes (set the image in its kustomization)
 make deploy openshift NAMESPACE=<project>   # OpenShift: BuildConfig + ImageStream + Route
 ```
+
+The server image is 1.25 GB. The ingest image (3.1 GB) adds Docling with CPU-only PyTorch and headless OpenCV, and bakes Docling's layout, table and OCR models into `/app/models`, so refresh jobs need no internet and no writable paths beyond `/tmp`; point the CronJob at it for PDF and Office sources. Verified: the full Northwind corpus ingests in it air-gapped (`--network none`), read-only, as an arbitrary UID, with the same 59 concepts as a local build.
 
 `deployment/base` holds the Deployment, Service, ConfigMap, Secret, PVC and the refresh CronJob with its connectors ConfigMap; the overlays add the OpenShift-only BuildConfig, ImageStream and Route, or a local image for plain Kubernetes. Pods match OpenShift's restricted-v2 SCC: any non-root UID, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp and a read-only root filesystem. Authentication is on by default; fill in the ConfigMap's `SSO_*` URLs and the Secret, and provision PostgreSQL for the template's OAuth state. The CronJob writes snapshots to the PVC and the server reads them read-only, so a refresh is served without a restart. On a multi-node cluster give the PVC a ReadWriteMany storage class.
 
