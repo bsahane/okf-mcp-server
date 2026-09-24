@@ -65,6 +65,7 @@ class BuildReport:
     failures: Dict[str, str] = field(default_factory=dict)
     problems: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
+    skipped: Dict[str, str] = field(default_factory=dict)
     changes: List[Tuple[str, str]] = field(default_factory=list)
 
 
@@ -376,10 +377,13 @@ def build(
     }
     manifest: Dict[str, Dict[str, Any]] = {}
     renamed: set = set()
+    first_by_revision: Dict[str, str] = {}
 
     for path, rel in zip(files, rels):
         if path.suffix.lower() not in SUPPORTED_SUFFIXES:
-            report.failures[rel] = f"unsupported file type {path.suffix or '(none)'}"
+            # Real folders hold archives, diagrams and the like; they are
+            # reported but must not block publishing the documents we can read.
+            report.skipped[rel] = f"unsupported file type {path.suffix or '(none)'}"
             continue
         sid = source_id_for(rel)
         try:
@@ -391,6 +395,20 @@ def build(
             report.failures[rel] = f"{type(e).__name__}: {e}"
             continue
         revision = "sha256:" + hashlib.sha256(content).hexdigest()
+        deprecated = {
+            r
+            for r, c in docs_config.items()
+            if isinstance(c, dict) and c.get("status") == "deprecated"
+        }
+        if (
+            revision in first_by_revision
+            and not {rel, first_by_revision[revision]} & deprecated
+        ):
+            report.warnings.append(
+                f"{rel} has the same content as {first_by_revision[revision]}; "
+                "mark one deprecated in _okf.yaml or remove it"
+            )
+        first_by_revision.setdefault(revision, rel)
         uri = path.as_uri()
         prior = prev_manifest.get(sid)
         renamed_from = None
@@ -411,6 +429,11 @@ def build(
                 report.failures[rel] = f"{type(e).__name__}: {e}"
                 continue
 
+        if not any(s.markdown.strip() for s in doc.sections):
+            # Empty files, and scans where OCR found nothing, would publish
+            # concepts with no evidence.
+            report.failures[rel] = "no text extracted (empty file or unreadable scan)"
+            continue
         body, written = render_body(doc.sections)
         slugs = [s.slug for s in split_sections(body)]
         if len(slugs) != len(written):
@@ -497,6 +520,7 @@ def build(
                 "created_at": iso(now),
                 "source_root": str(source_root),
                 "sources": manifest,
+                "skipped": report.skipped,
             },
             indent=2,
             ensure_ascii=False,

@@ -149,9 +149,10 @@ class TestBuild:
         data = tmp_path / "data"
         assert build(corpus, data).published
         before = current_snapshot(data).id
-        (corpus / "binary.exe").write_bytes(b"\x00")
+        (corpus / "blank.md").write_text("   \n")
         report = build(corpus, data)
-        assert not report.published and "binary.exe" in report.failures
+        assert not report.published
+        assert "no text extracted" in report.failures["blank.md"]
         assert current_snapshot(data).id == before
         assert not list((data / "snapshots").glob(".building-*"))
         allowed = build(corpus, data, allow_failures=True)
@@ -159,7 +160,47 @@ class TestBuild:
         failures = json.loads(
             (current_snapshot(data).root / "failures.json").read_text()
         )
-        assert "binary.exe" in failures
+        assert "blank.md" in failures
+
+    def test_unsupported_files_are_skipped_not_blocking(self, corpus, tmp_path, capsys):
+        (corpus / "diagram.vsdx").write_bytes(b"x")
+        (corpus / "old.zip").write_bytes(b"PK")
+        data = tmp_path / "data"
+        report = build(corpus, data)
+        assert report.published and not report.failures
+        assert set(report.skipped) == {"diagram.vsdx", "old.zip"}
+        manifest = json.loads(current_snapshot(data).manifest.read_text())
+        assert "old.zip" in manifest["skipped"]
+        assert cli_main(["--data-dir", str(data), "build", str(corpus)]) == 0
+        assert "SKIPPED diagram.vsdx" in capsys.readouterr().err
+
+    def test_duplicate_content_is_warned(self, corpus, tmp_path):
+        text = (corpus / "policies" / "travel.md").read_text()
+        (corpus / "policies" / "travel FINAL.md").write_text(text)
+        report = build(corpus, tmp_path / "data")
+        assert report.published
+        assert any(
+            "same content" in w and "travel FINAL.md" in w and "travel.md" in w
+            for w in report.warnings
+        )
+        cfg = corpus / "_okf.yaml"
+        cfg.write_text(
+            cfg.read_text() + '  "policies/travel FINAL.md": {status: deprecated}\n'
+        )
+        assert not any(
+            "same content" in w for w in build(corpus, tmp_path / "data").warnings
+        )
+
+    def test_title_only_sections_are_not_indexed(self, corpus, tmp_path):
+        data = tmp_path / "data"
+        build(corpus, data)
+        db = sqlite3.connect(current_snapshot(data).index)
+        assert (
+            db.execute(
+                "SELECT count(*) FROM passages WHERE trim(text) = ''"
+            ).fetchone()[0]
+            == 0
+        )
 
     def test_invalid_config_timestamp_blocks_publish(self, corpus, tmp_path):
         cfg = corpus / "_okf.yaml"
@@ -178,13 +219,16 @@ class TestBuild:
         ],
     )
     def test_config_errors(self, tmp_path, config, message, corpus_writer):
-        src = corpus_writer(tmp_path / "s", {"a.md": "# A\n", "_okf.yaml": config})
+        src = corpus_writer(
+            tmp_path / "s", {"a.md": "# A\n\ntext\n", "_okf.yaml": config}
+        )
         with pytest.raises(ValueError, match=message):
             build(src, tmp_path / "data")
 
     def test_config_for_missing_file_is_reported(self, tmp_path, corpus_writer):
         src = corpus_writer(
-            tmp_path / "s", {"a.md": "# A\n", "_okf.yaml": "documents: {gone.md: {}}"}
+            tmp_path / "s",
+            {"a.md": "# A\n\ntext\n", "_okf.yaml": "documents: {gone.md: {}}"},
         )
         report = build(src, tmp_path / "data")
         assert report.published and "matches no source file" in report.warnings[0]
@@ -195,7 +239,8 @@ class TestBuild:
 
     def test_hidden_files_are_skipped(self, tmp_path, corpus_writer):
         src = corpus_writer(
-            tmp_path / "s", {"a.md": "# A\n", ".git/x.md": "# X\n", ".DS_Store": "x"}
+            tmp_path / "s",
+            {"a.md": "# A\n\ntext\n", ".git/x.md": "# X\n", ".DS_Store": "x"},
         )
         assert build(src, tmp_path / "data").concepts == 1
 
@@ -513,9 +558,9 @@ class TestEvaluateAndCli:
         assert '"hit_at_5": 1.0' in capsys.readouterr().out
 
     def test_cli_build_failure_exit_code(self, corpus, tmp_path, capsys):
-        (corpus / "x.exe").write_bytes(b"\x00")
+        (corpus / "blank.txt").write_text("")
         assert cli_main(["--data-dir", str(tmp_path / "d"), "build", str(corpus)]) == 1
-        assert "FAILED  x.exe" in capsys.readouterr().err
+        assert "FAILED  blank.txt" in capsys.readouterr().err
 
     def test_cli_validate_reports_problems(self, published, capsys):
         bad = current_snapshot(published).bundle / "bad.md"

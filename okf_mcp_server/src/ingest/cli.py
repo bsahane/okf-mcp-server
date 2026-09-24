@@ -40,6 +40,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     sub.add_parser("validate", help="check the published bundle against OKF v0.2 §11")
 
+    s = sub.add_parser(
+        "suggest-config", help="print a draft _okf.yaml for a source folder (review it)"
+    )
+    s.add_argument("source", type=Path, help="folder of source documents")
+
     e = sub.add_parser("eval", help="measure Hit@k against a question set")
     e.add_argument("questions", type=Path, help="YAML question file")
     e.add_argument("-k", type=int, default=5)
@@ -53,6 +58,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         for rel, error in sorted(report.failures.items()):
             print(f"FAILED  {rel}: {error}", file=sys.stderr)
+        for rel, reason in sorted(report.skipped.items()):
+            print(f"SKIPPED {rel}: {reason}", file=sys.stderr)
         for warning in report.warnings:
             print(f"WARNING {warning}", file=sys.stderr)
         for problem in report.problems:
@@ -63,9 +70,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(
             f"snapshot {report.snapshot_id} {state}: {report.concepts} concepts, "
             f"{report.passages} passages, {report.reused} extractions reused, "
-            f"{len(report.failures)} failures"
+            f"{len(report.failures)} failures, {len(report.skipped)} skipped"
         )
         return 0 if report.published and not report.failures else 1
+
+    if args.command == "suggest-config":
+        from okf_mcp_server.src.ingest.suggest import suggest_config
+
+        print(suggest_config(args.source), end="")
+        return 0
 
     from okf_mcp_server.src.knowledge.snapshot import current_snapshot
 

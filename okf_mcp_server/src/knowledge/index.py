@@ -150,8 +150,10 @@ def build_index(
             source = sources[0] if sources and isinstance(sources[0], dict) else {}
             locations = _load_locations(extraction_dir, source.get("id"))
             for section in split_sections(body):
-                for text in _split_long(section.text) or [""]:
-                    if not text.strip() and not section.title:
+                for text in _split_long(section.text):
+                    if not text.strip():
+                        # Title-only sections carry no citable evidence; every
+                        # passage already indexes the concept title.
                         continue
                     conn.execute(
                         "INSERT INTO passages (concept_id, section, section_title, text, title,"

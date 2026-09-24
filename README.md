@@ -113,9 +113,10 @@ async with Client("http://localhost:5001/mcp") as client:
 okf-ingest build /path/to/documents     # build and publish a new snapshot
 okf-ingest validate                     # re-check the published bundle
 okf-ingest eval questions.yaml          # measure retrieval quality (Hit@5)
+okf-ingest suggest-config /path/to/documents > _okf.yaml   # draft metadata to review
 ```
 
-Supported formats: `.pdf .docx .pptx .xlsx .html .htm .csv` (via Docling) and `.md .markdown .txt` (native). Hidden files are skipped. Unsupported files are reported as failures.
+Supported formats: `.pdf .docx .pptx .xlsx .html .htm .csv` (via Docling) and `.md .markdown .txt` (native). Hidden files are skipped. Unsupported types (archives, diagrams, …) are listed as `SKIPPED` and recorded in `manifest.json`, but do not block publishing. Empty files, and scans where OCR finds no text, are failures.
 
 ### What a build does
 
@@ -128,6 +129,8 @@ Supported formats: `.pdf .docx .pptx .xlsx .html .htm .csv` (via Docling) and `.
 ### Metadata with `_okf.yaml`
 
 Put an optional `_okf.yaml` in the source root to set OKF types, lifecycle and review state. Full example: [samples/finance/_okf.yaml](samples/finance/_okf.yaml).
+
+Start from `okf-ingest suggest-config <folder>`. It prints a draft with a comment on every guess: types from folder and file names, older dated versions (`… 2024` next to `… 2026`) and identical copies marked `deprecated`, and files named *draft* kept as drafts. It never reads document content and never marks anything `verified`; that is for document owners. Builds also warn about identical files until one of them is marked deprecated.
 
 ```yaml
 bundle_title: Acme Finance knowledge
