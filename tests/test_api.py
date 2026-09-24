@@ -239,13 +239,20 @@ class TestRegisterEndpointRoute:
 class TestLoopbackOriginMiddleware:
     """DNS-rebinding protection (FastMCP 2.14.2 leaves the SDK's check off)."""
 
-    @pytest.fixture(autouse=True)
-    def mock_imports(self):
-        """Run against the real stack; earlier tests reload `api` with mocks."""
+    @pytest.fixture(autouse=True, params=[False, True], ids=["auth-off", "auth-on"])
+    def mock_imports(self, request, monkeypatch):
+        """Rebuild the real app with auth off and on (CI has no `.env`).
+
+        Earlier tests reload `api` with mocked dependencies, so reload it here.
+        """
         import importlib
 
         import okf_mcp_server.src.api as api_module
+        from okf_mcp_server.src.settings import settings
 
+        monkeypatch.setattr(settings, "ENABLE_AUTH", request.param)
+        monkeypatch.setattr(settings, "USE_EXTERNAL_BROWSER_AUTH", False)
+        monkeypatch.setattr(settings, "MCP_HOST", "localhost")
         global app
         app = importlib.reload(api_module).app
         yield

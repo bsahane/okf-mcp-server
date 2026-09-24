@@ -250,9 +250,6 @@ class LoopbackOriginMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-if not settings.ENABLE_AUTH or settings.MCP_HOST.lower() in LOOPBACK_HOSTS:
-    app.add_middleware(LoopbackOriginMiddleware)
-
 if settings.USE_EXTERNAL_BROWSER_AUTH and settings.ENABLE_AUTH:
     app.add_middleware(LocalDevelopmentAuthorizationMiddleware)
 else:
@@ -415,3 +412,8 @@ if settings.CORS_ENABLED:
         allow_methods=settings.CORS_METHODS,
         allow_headers=settings.CORS_HEADERS,
     )
+
+# Registered last so it is the outermost middleware: foreign Host/Origin
+# requests are rejected before OAuth, sessions, CORS or MCP handle them.
+if not settings.ENABLE_AUTH or settings.MCP_HOST.lower() in LOOPBACK_HOSTS:
+    app.add_middleware(LoopbackOriginMiddleware)
