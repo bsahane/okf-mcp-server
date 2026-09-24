@@ -138,6 +138,22 @@ class TestSearchKnowledge:
     def test_limit_is_bounded(self, published):
         assert len(search_knowledge("the", limit=1000)["results"]) <= 20
 
+    def test_oversized_table_excerpt_is_bounded_and_fetchable(self, published, corpus):
+        from okf_mcp_server.src.knowledge.index import MAX_PASSAGE_CHARS
+
+        body = (
+            "# Table\n\n| Code | Notes |\n|---|---|\n| SKU-999 | "
+            + "note " * 5000
+            + " |\n"
+        )
+        (corpus / "table.md").write_text(body)
+        assert build(corpus, published).published
+        result = search_knowledge("SKU-999")["results"][0]
+        assert len(result["excerpt"]) <= MAX_PASSAGE_CHARS
+        assert result["excerpt_truncated"] is True
+        page = get_knowledge(result["concept_id"], section=result["section"])
+        assert page["next_cursor"]
+
     @pytest.mark.parametrize("query", ["", "   ", "x" * 501])
     def test_invalid_queries(self, published, query):
         with pytest.raises(ToolError):

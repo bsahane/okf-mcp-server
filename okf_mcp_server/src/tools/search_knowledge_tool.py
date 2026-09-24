@@ -27,7 +27,7 @@ def search_knowledge(
     TOOL_NAME=search_knowledge
     DISPLAY_NAME=Search Knowledge
     USECASE=Find evidence for a question; exact names, codes and keywords work best
-    INSTRUCTIONS=1. Search with the key terms of the question, 2. Prefer results with status stable and stale false; say so when evidence is deprecated or stale, 3. Cite source.uri and source.location_text, 4. Use get_knowledge for the full section, 5. If nothing relevant is found, say the evidence is insufficient rather than guessing
+    INSTRUCTIONS=1. Search with the key terms of the question, 2. Prefer results with status stable and stale false; say so when evidence is deprecated or stale, 3. Cite source.uri and source.location_text, 4. Use get_knowledge for the full section, especially when excerpt_truncated is true, 5. If nothing relevant is found, say the evidence is insufficient rather than guessing
     INPUT_DESCRIPTION=query (text, up to 500 characters), type (optional concept type, e.g. "Policy"), tags (optional list; all must match), limit (1-20, default 5)
     OUTPUT_DESCRIPTION=Dictionary with status, results (concept_id, title, type, section, section_title, excerpt, status, trust_tier, stale, source{id, uri, revision, location, location_text}) and snapshot_id; an empty result list means no matching evidence
     EXAMPLES=search_knowledge("hotel limit London"), search_knowledge("SKU-4471 warranty", type="Specification")

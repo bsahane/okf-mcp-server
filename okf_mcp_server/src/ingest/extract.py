@@ -40,14 +40,16 @@ def extract_native(path: Path) -> ExtractedDoc:
     """Extract Markdown or plain text without third-party dependencies."""
     text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
     skipped = 0
-    if text.startswith("---\n"):
+    if path.suffix.lower() != ".txt" and text.startswith("---\n"):
         # Drop any existing frontmatter; the ingest config owns metadata.
-        end = text.find("\n---", 4)
-        if end != -1:
-            rest = text[end + 4 :]
-            body = rest.lstrip("\n")
-            skipped = text[: end + 4].count("\n") + 1 + (len(rest) - len(body) - 1)
-            text = body
+        source_lines = text.split("\n")
+        for end in range(1, len(source_lines)):
+            if source_lines[end].strip() == "---":
+                skipped = end + 1
+                while skipped < len(source_lines) and not source_lines[skipped]:
+                    skipped += 1
+                text = "\n".join(source_lines[skipped:])
+                break
     if path.suffix.lower() == ".txt":
         line_count = text.count("\n") + 1
         return ExtractedDoc(

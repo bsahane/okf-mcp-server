@@ -198,6 +198,7 @@ def split_sections(body: str) -> List[Section]:
     """
     sections: List[Section] = []
     seen: Dict[str, int] = {}
+    used: set[str] = set()
     title, level = "", 0
     buf: List[str] = []
     in_fence = False
@@ -209,6 +210,10 @@ def split_sections(body: str) -> List[Section]:
         base = slugify(title) if title else "preamble"
         seen[base] = seen.get(base, 0) + 1
         slug = base if seen[base] == 1 else f"{base}-{seen[base]}"
+        while slug in used:
+            seen[base] += 1
+            slug = f"{base}-{seen[base]}"
+        used.add(slug)
         sections.append(Section(slug=slug, title=title, level=level, text=text))
 
     for line in body.split("\n"):

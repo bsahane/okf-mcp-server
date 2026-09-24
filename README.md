@@ -123,6 +123,7 @@ Supported formats: `.pdf .docx .pptx .xlsx .html .htm .csv` (via Docling) and `.
 - **Reuses work.** Files whose SHA-256 is unchanged reuse the previous extraction, so Docling does not run again. Renamed files are detected by content. Deleted files are gone from the new snapshot, and `log.md` records every creation, update, rename and deletion.
 - **Keeps citations durable.** Locations are stored in `extraction/<source-id>.json` next to the bundle (including Docling's own JSON), so rebuilding the index never guesses locations from Markdown.
 - **Publishes safely.** If any file fails to extract, or the bundle fails validation, nothing is published. `--allow-failures` publishes the rest and writes `failures.json`.
+- **Stays inside the source folder.** Keep `OKF_DATA_DIR` outside the source folder; a data directory inside it is rejected so builds cannot ingest their own snapshots. Symlinked files that resolve outside the source folder, and partial Docling conversions, are reported as failures.
 
 ### Metadata with `_okf.yaml`
 
@@ -226,6 +227,7 @@ Behaviour worth knowing:
 - **Errors are real MCP errors.** Invalid input returns `isError: true`, and so does a path outside the bundle. An empty search is a *successful* result with no evidence, so the assistant can say it does not know.
 - **Search is keyword-based (SQLite FTS5, BM25).** Exact codes such as `SKU-4471` match reliably. Paraphrases depend on shared words; measure with `okf-ingest eval` before adding embeddings.
 - **Pagination is snapshot-bound.** Once a new snapshot is published, older cursors ask the client to restart from the first page, so pages from two revisions are never mixed.
+- **Excerpts are capped.** Search excerpts are at most 1,500 characters. When `excerpt_truncated` is true (for example, one oversized table row), read the section with `get_knowledge` and follow its cursor.
 
 ## Configuration
 
@@ -288,6 +290,7 @@ make test             # pytest
 make coverage         # 80% minimum, as enforced in CI
 pytest -m docling     # Docling adapter tests (needs `make ingest-install`)
 make pre-commit       # ruff, ruff-format, mypy, pydocstyle, bandit, file checks
+pytest tests/test_http.py  # starts the real server and checks MCP over HTTP
 ```
 
 - CI runs the main suite on Python 3.12 and 3.13 without Docling. The adapter is excluded from coverage and tested by a separate `ingest` job with the extra installed.

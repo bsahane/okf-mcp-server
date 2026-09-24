@@ -199,6 +199,38 @@ class TestBuild:
         )
         assert build(src, tmp_path / "data").concepts == 1
 
+    def test_output_inside_source_is_rejected(self, corpus):
+        with pytest.raises(ValueError, match="outside the source"):
+            build(corpus, corpus / "data")
+        assert not (corpus / "data").exists()
+
+    def test_source_symlink_cannot_import_outside_files(self, corpus, tmp_path):
+        secret = tmp_path / "private.txt"
+        secret.write_text("Private payroll records")
+        (corpus / "linked.txt").symlink_to(secret)
+        report = build(corpus, tmp_path / "data")
+        assert not report.published
+        assert "outside the source" in report.failures["linked.txt"]
+
+    def test_source_read_failure_keeps_previous_snapshot(
+        self, corpus, tmp_path, monkeypatch
+    ):
+        data = tmp_path / "data"
+        build(corpus, data)
+        previous = current_snapshot(data).id
+        original_read = Path.read_bytes
+
+        def unreadable(path):
+            if path.name == "notes.txt":
+                raise PermissionError("read denied")
+            return original_read(path)
+
+        monkeypatch.setattr(Path, "read_bytes", unreadable)
+        report = build(corpus, data)
+        assert not report.published and "notes.txt" in report.failures
+        assert current_snapshot(data).id == previous
+        assert not list((data / "snapshots").glob(".building-*"))
+
 
 class TestConceptIds:
     """Mapping source paths to concept IDs."""
@@ -237,6 +269,19 @@ class TestExtractionAndRendering:
         path.write_text("line one\nline two\n")
         doc = extract_native(path)
         assert len(doc.sections) == 1 and doc.sections[0].location == {"lines": [1, 3]}
+
+    def test_text_delimiters_do_not_discard_content(self, tmp_path):
+        path = tmp_path / "a.txt"
+        text = "---\nCritical terms\n---\nRest of the agreement"
+        path.write_text(text)
+        assert extract_native(path).sections[0].markdown == text
+
+    def test_markdown_frontmatter_requires_exact_closing_delimiter(self, tmp_path):
+        path = tmp_path / "a.md"
+        path.write_text("---\ntitle: A\n---not-a-delimiter\n---\n\n# A\nBody\n")
+        doc = extract_native(path)
+        assert len(doc.sections) == 1 and doc.sections[0].title == "A"
+        assert doc.sections[0].location["lines"] == [6, 8]
 
     def test_unsupported(self, tmp_path):
         with pytest.raises(ValueError, match="unsupported"):
@@ -317,6 +362,12 @@ class TestKnowledgeHelpers:
             with pytest.raises(BundleError):
                 split_frontmatter(text)
         assert split_frontmatter("\ufeff---\ntype: X\n---\nbody")[0] == {"type": "X"}
+
+    def test_section_slugs_remain_unique_with_numbered_headings(self):
+        sections = split_sections("intro\n# Preamble\na\n# A\nb\n# A\nc\n# A-2\nd\n")
+        slugs = [s.slug for s in sections]
+        assert len(slugs) == len(set(slugs))
+        assert [s.text for s in sections] == ["intro", "a", "b", "c", "d"]
 
     def test_trust_tiers_and_bare_verified_mapping(self):
         assert trust_tier({}) == "unverified"
@@ -416,6 +467,21 @@ class TestValidate:
             "okf_version",
         ):
             assert needle in problems
+
+    @pytest.mark.parametrize(
+        "filename, text",
+        [
+            ("index.md", "---\nokf_version: [\n---\n"),
+            ("a.md", "---\ntype: X\nsources: 123\n---\n"),
+            (
+                "a.md",
+                "---\ntype: X\nverified: [{by: 'human:owner', at: yesterday}]\n---\n",
+            ),
+        ],
+    )
+    def test_malformed_metadata_reports_problems(self, tmp_path, filename, text):
+        (tmp_path / filename).write_text(text)
+        assert validate_bundle(tmp_path)
 
 
 class TestEvaluateAndCli:

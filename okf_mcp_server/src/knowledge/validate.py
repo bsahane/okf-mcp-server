@@ -26,7 +26,11 @@ def validate_bundle(bundle_root: Path) -> List[str]:
     root = bundle_root.resolve()
     for path in sorted(root.rglob("*.md")):
         rel = path.relative_to(root).as_posix()
-        text = path.read_text(encoding="utf-8")
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as e:
+            problems.append(f"{rel}: cannot read document: {e}")
+            continue
         if path.name == "index.md":
             if text.startswith("---"):
                 try:
@@ -38,6 +42,12 @@ def validate_bundle(bundle_root: Path) -> List[str]:
                     problems.append(
                         f"{rel}: only the root index.md may carry frontmatter (okf_version)"
                     )
+                if (
+                    path.parent == root
+                    and "okf_version" in fm
+                    and str(fm["okf_version"]) != OKF_VERSION
+                ):
+                    problems.append(f"index.md: okf_version should be {OKF_VERSION!r}")
             continue
         if path.name == "log.md":
             for line in text.splitlines():
@@ -61,20 +71,33 @@ def validate_bundle(bundle_root: Path) -> List[str]:
                 problems.append(
                     f"{rel}: `generated.at` must be ISO 8601 with a UTC offset"
                 )
-        for source in fm.get("sources") or []:
+        sources = fm.get("sources", [])
+        if not isinstance(sources, list):
+            problems.append(f"{rel}: `sources` must be a list")
+            sources = []
+        for source in sources:
             if not isinstance(source, dict) or not source.get("resource"):
                 problems.append(f"{rel}: every `sources` entry needs `resource`")
+        verified = fm.get("verified", [])
+        if isinstance(verified, dict):
+            verified = [verified]
+        if not isinstance(verified, list):
+            problems.append(f"{rel}: `verified` must be a mapping or list")
+            verified = []
+        for event in verified:
+            if (
+                not isinstance(event, dict)
+                or not isinstance(event.get("by"), str)
+                or not event["by"].strip()
+                or not _has_offset(event.get("at"))
+            ):
+                problems.append(
+                    f"{rel}: `verified` needs `by` and an ISO 8601 `at` with offset"
+                )
         if "stale_after" in fm and not _has_offset(fm["stale_after"]):
             problems.append(f"{rel}: `stale_after` must be ISO 8601 with a UTC offset")
         if fm.get("status", "stable") not in ("draft", "stable", "deprecated"):
             problems.append(f"{rel}: `status` must be draft, stable or deprecated")
-    root_index = root / "index.md"
-    if root_index.is_file():
-        text = root_index.read_text(encoding="utf-8")
-        if text.startswith("---"):
-            fm, _ = split_frontmatter(text)
-            if str(fm.get("okf_version")) != OKF_VERSION:
-                problems.append(f"index.md: okf_version should be {OKF_VERSION!r}")
     return problems
 
 

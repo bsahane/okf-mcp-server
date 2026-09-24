@@ -338,6 +338,9 @@ def build(
     source_root = source_root.resolve()
     if not source_root.is_dir():
         raise ValueError(f"source directory not found: {source_root}")
+    data_dir = data_dir.resolve()
+    if data_dir.is_relative_to(source_root):
+        raise ValueError("snapshot data directory must be outside the source directory")
     config = load_config(source_root)
     docs_config = config.get("documents") or {}
 
@@ -379,7 +382,14 @@ def build(
             report.failures[rel] = f"unsupported file type {path.suffix or '(none)'}"
             continue
         sid = source_id_for(rel)
-        content = path.read_bytes()
+        try:
+            if not path.resolve(strict=True).is_relative_to(source_root):
+                raise ValueError("source file resolves outside the source directory")
+            content = path.read_bytes()
+            stat = path.stat()
+        except (OSError, ValueError, RuntimeError) as e:
+            report.failures[rel] = f"{type(e).__name__}: {e}"
+            continue
         revision = "sha256:" + hashlib.sha256(content).hexdigest()
         uri = path.as_uri()
         prior = prev_manifest.get(sid)
@@ -413,7 +423,6 @@ def build(
         generated_at = iso(now)
         if prior is not None and unchanged and prior.get("generated_at"):
             generated_at = prior["generated_at"]
-        stat = path.stat()
         fm: Dict[str, Any] = {
             "type": type_for(rel, config),
             "title": str(cfg.get("title") or doc.title or _title_from_filename(rel)),

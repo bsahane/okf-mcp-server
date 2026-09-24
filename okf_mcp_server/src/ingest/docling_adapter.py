@@ -10,7 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from docling.datamodel.base_models import InputFormat
+from docling.datamodel.base_models import ConversionStatus, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling_core.types.doc import (
@@ -41,6 +41,8 @@ def extract_with_docling(
 ) -> ExtractedDoc:
     """Convert one file with Docling into ordered, located sections."""
     result = _converter(str(artifacts_path) if artifacts_path else None).convert(path)
+    if result.status != ConversionStatus.SUCCESS:
+        raise ValueError(f"Docling conversion did not complete: {result.status.value}")
     doc = result.document
 
     sections: List[ExtractedSection] = []

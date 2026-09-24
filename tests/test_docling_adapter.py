@@ -4,6 +4,8 @@ Skipped when the `ingest` extra is not installed. DOCX and XLSX conversion
 needs no model downloads; PDF is exercised manually on real files.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 pytest.importorskip("docling")
@@ -59,3 +61,24 @@ def test_xlsx_sheets_become_sections(tmp_path):
     ]
     assert "pages" not in result.sections[0].location
     assert "CC-210" in result.sections[0].markdown
+
+
+@pytest.mark.parametrize("status", ["partial_success", "failure"])
+def test_incomplete_conversion_is_rejected(tmp_path, monkeypatch, status):
+    from docling.datamodel.base_models import ConversionStatus
+
+    from okf_mcp_server.src.ingest import docling_adapter
+
+    result = SimpleNamespace(
+        status=ConversionStatus(status),
+        document=SimpleNamespace(
+            iterate_items=lambda **kwargs: iter(()), export_to_dict=lambda: {}
+        ),
+    )
+    monkeypatch.setattr(
+        docling_adapter,
+        "_converter",
+        lambda _: SimpleNamespace(convert=lambda path: result),
+    )
+    with pytest.raises(ValueError, match="conversion did not complete"):
+        extract_with_docling(tmp_path / "broken.pdf")
