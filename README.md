@@ -20,8 +20,11 @@ OKF MCP Server converts PDFs, Word, Excel, PowerPoint, HTML and Markdown into Go
 - [Quick start](#quick-start)
 - [Connect an AI client](#connect-an-ai-client)
 - [Ingest your own documents](#ingest-your-own-documents)
+- [Access control](#access-control)
+- [Connectors and scheduled refresh](#connectors-and-scheduled-refresh)
 - [MCP tools](#mcp-tools)
 - [Configuration](#configuration)
+- [Deploy on Kubernetes or OpenShift](#deploy-on-kubernetes-or-openshift)
 - [Security model](#security-model)
 - [Project layout](#project-layout)
 - [Development](#development)
@@ -218,6 +221,66 @@ Search combines two rankings with reciprocal-rank fusion: BM25 keywords, which a
 
 Docling downloads layout models on its first PDF conversion. To run without network access, pre-download them and set `DOCLING_ARTIFACTS_PATH`, or pass `okf-ingest build --artifacts-path <dir>`.
 
+## Access control
+
+With `ENABLE_AUTH=True` every tool call needs a bearer token from your OIDC provider (Keycloak / Red Hat build of Keycloak, Entra ID, Okta, …). The server validates it by introspection and passes the caller's identity to the tools; tool arguments never carry identity.
+
+- **Tokens:** the audience (`aud`/`azp`) must include `OKF_REQUIRED_AUDIENCE` (403 otherwise); `OKF_REQUIRED_SCOPE` optionally requires a scope. Groups come from the `OKF_GROUPS_CLAIM` claim (Keycloak group paths like `/finance/payroll` match `finance/payroll` and `payroll`).
+- **Documents:** each concept carries an `access` list of principals: `group:<name>`, `user:<email, username or subject>`, or `*` (any signed-in user). It comes from, in order, `documents.<file>.access` in `_okf.yaml`, the source system's permissions recorded by a connector, and path-prefix rules:
+
+  ```yaml
+  access:                     # in _okf.yaml; longest matching prefix wins
+    finance/: [group:finance]
+    hr/: {groups: [hr], users: [ceo@example.com]}
+    public/: ["*"]
+  ```
+
+  Documents with no list follow `OKF_DEFAULT_ACCESS`: `deny` (default) or `authenticated`.
+- **Filtering:** search filters keyword and semantic candidates before ranking, so hidden documents never take a result slot or leak a snippet; browse hides documents and folders with nothing visible; a denied fetch answers "not found", exactly like a missing one.
+- **Changes:** group membership comes from the token, so removing someone from a group applies to their next token. Document permissions change with the next refresh, so the refresh interval is the maximum permission-sync delay. Revoked sessions fail introspection immediately (401).
+- **Audit:** every tool call is logged as an `okf.audit` event with the caller, tool, query and returned documents, and appended as JSON lines to `OKF_AUDIT_LOG` if set. Ingestion adds `ingest.sync` and `ingest.build` events.
+
+`tests/e2e/auth_e2e.py` checks all of this against a real Keycloak in Docker (12 checks: 401/403, per-group visibility, not-found on denial, revocation, group removal, audit).
+
+## Connectors and scheduled refresh
+
+Connectors mirror source systems, content and permissions, into a local folder that `okf-ingest build` reads. Secrets are only read from environment variables.
+
+```yaml
+# connectors.yaml
+mirror: /var/lib/okf/mirror
+okf_config: /etc/okf/_okf.yaml        # optional build rules, copied into the mirror
+sources:
+  - name: finance-share               # file share: local, NFS or SMB mount
+    kind: fileshare
+    path: /mnt/finance
+    permissions: posix                # owner/group/mode bits -> principals; or none
+  - name: hr-sharepoint               # SharePoint / OneDrive via Microsoft Graph (app-only)
+    kind: sharepoint
+    tenant_id: <tenant-id>
+    client_id: <app-id>
+    client_secret_env: OKF_SHAREPOINT_SECRET
+    site: contoso.sharepoint.com:/sites/HR
+    drive: Documents
+    folder: Policies
+  - name: ops-drive                   # Google Drive v3, service account
+    kind: gdrive
+    service_account_key_env: OKF_GDRIVE_KEY_FILE
+    folder_id: <folder-id>
+```
+
+```bash
+okf-ingest sync connectors.yaml       # mirror only
+okf-ingest refresh connectors.yaml    # sync, then build and publish (schedule this)
+```
+
+- **Incremental and exact:** unchanged items are not downloaded, deletions are removed, a failed download keeps the last good copy, and a source that fails to list keeps its previous mirror. `refresh` does not build after a failed sync unless `--allow-failures`.
+- **Permissions:** file shares map owner, group and mode bits; SharePoint maps users, Entra and SharePoint groups and organization/anonymous links (`group_names: id` if your tokens carry group IDs); Drive maps users, groups, domain and anyone. Each source can set a default `access` for items without source permissions.
+- **Formats:** Google Docs, Sheets and Slides are exported as DOCX, XLSX and PPTX.
+- **Scheduling:** on Kubernetes/OpenShift the `okf-refresh` CronJob runs `refresh` nightly (`concurrencyPolicy: Forbid`; builds also lock the data directory). On a server, use cron: `0 2 * * * /opt/okf/.venv/bin/okf-ingest --data-dir /var/lib/okf/data refresh /etc/okf/connectors.yaml`.
+
+SharePoint and Google Drive are tested against mock servers that follow the Graph and Drive APIs (paging, throttling, redirects, exports, permissions); they have not yet been run against a live tenant. File shares are tested on real files and in the Kubernetes end-to-end run.
+
 ## MCP tools
 
 | Tool | Arguments | Returns |
@@ -264,7 +327,13 @@ Settings come from environment variables or `.env`. `make local` creates `.env` 
 | `MCP_HOST` | `localhost` | Bind address. |
 | `MCP_PORT` | `5001` | Port. |
 | `MCP_TRANSPORT_PROTOCOL` | `http` | `http`/`streamable-http` (served at `/mcp`) or `sse`. |
-| `ENABLE_AUTH` | `True` in code, `False` in `.env.example` | Template OAuth. The knowledge tools **refuse all requests** while it is on (see below). |
+| `ENABLE_AUTH` | `True` in code, `False` in `.env.example` | Token authentication and per-user filtering (see [Access control](#access-control)); needs `SSO_*` and `POSTGRES_*` settings. |
+| `OKF_VECTOR_BACKEND` | `auto` | `numpy` (in memory, fastest), `sqlite-vec` (on disk, flat memory) or `auto` (numpy up to 50k vectors). |
+| `OKF_DEFAULT_ACCESS` | `deny` | With auth on, who sees documents without an access list: `deny` or `authenticated`. |
+| `OKF_REQUIRED_AUDIENCE` | empty | Reject tokens whose `aud`/`azp` lacks this value (set it, e.g. `okf-mcp`). |
+| `OKF_REQUIRED_SCOPE` | empty | Reject tokens without this scope. |
+| `OKF_GROUPS_CLAIM` | `groups` | Token claim holding the caller's groups. |
+| `OKF_AUDIT_LOG` | empty | Append a JSON line per tool call and ingestion event to this file. |
 | `PYTHON_LOG_LEVEL` | `INFO` | Log level. |
 
 The template's OAuth, SSL and PostgreSQL settings are documented in [docs/authentication.md](docs/authentication.md).
@@ -281,17 +350,26 @@ data/
     └── manifest.json    # source ID → concept, revision, extractor
 ```
 
+## Deploy on Kubernetes or OpenShift
+
+```bash
+docker build -t <registry>/okf-mcp-server:<tag> -f Containerfile .                  # server
+docker build -t <registry>/okf-mcp-server-ingest:<tag> --build-arg EXTRAS=ingest .   # PDF/Office ingestion
+kubectl apply -k deployment/kubernetes      # plain Kubernetes (set the image in its kustomization)
+make deploy openshift NAMESPACE=<project>   # OpenShift: BuildConfig + ImageStream + Route
+```
+
+`deployment/base` holds the Deployment, Service, ConfigMap, Secret, PVC and the refresh CronJob with its connectors ConfigMap; the overlays add the OpenShift-only BuildConfig, ImageStream and Route, or a local image for plain Kubernetes. Pods match OpenShift's restricted-v2 SCC: any non-root UID, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp and a read-only root filesystem. Authentication is on by default; fill in the ConfigMap's `SSO_*` URLs and the Secret, and provision PostgreSQL for the template's OAuth state. The CronJob writes snapshots to the PVC and the server reads them read-only, so a refresh is served without a restart. On a multi-node cluster give the PVC a ReadWriteMany storage class.
+
+Verified: `tests/e2e/k8s_e2e.py` deploys the Kubernetes overlay with Keycloak and PostgreSQL into a throwaway namespace (10 checks: arbitrary UID, read-only root, refresh Job from the CronJob, 401, per-group visibility, refresh without restart, audit), and `tests/e2e/validate_manifests.sh` validates both overlays strictly, the OpenShift kinds against OpenShift 4.18 schemas (also run in CI). The OpenShift overlay has not been applied to a live OpenShift cluster.
+
 ## Security model
 
-This release is a **pilot for one trusted operator on one machine**. Use only documents that are approved for that machine.
-
-- **No authentication, local only.** With auth disabled, the server rejects any request whose `Host` or `Origin` is not loopback (HTTP 421/403), protecting against DNS-rebinding attacks from web pages. FastMCP 2.14.2 does not enable the MCP SDK's own check. `/health` is exempt for container probes.
-- **Fail closed.** Setting `ENABLE_AUTH=True` makes every knowledge tool refuse requests, because per-user permission filtering does not exist yet. The template authenticates callers but does not pass their identity to tools.
-- **Confined reads.** Tools resolve paths, including symlinks, inside the bundle only, and reject reserved files. Output is bounded and paginated.
+- **Two modes.** With `ENABLE_AUTH=False` (local pilot) the operator is trusted and sees everything, and the server rejects any request whose `Host` or `Origin` is not loopback (HTTP 421/403) to stop DNS-rebinding attacks from web pages; FastMCP 2.14.2 does not enable the MCP SDK's own check. With `ENABLE_AUTH=True` (shared) every call needs a valid token with the right audience, and results are filtered per user; see [Access control](#access-control). Without a validated identity the tools fail closed.
+- **Confined reads.** Tools resolve paths, including symlinks, inside the bundle only, and reject reserved files. Connectors sanitize remote names so nothing escapes the mirror, and file shares follow links only when they stay inside the share. Output is bounded and paginated.
 - **Evidence, not instructions.** Retrieved text and source links are returned as data. The server never fetches URLs or executes anything from the corpus.
-- **Ingestion is operator-only.** AI clients cannot trigger builds or modify files.
-
-Shared, multi-user deployment is planned work (see [Roadmap](#roadmap) and [PLAN.md](PLAN.md)).
+- **Ingestion is operator-only.** AI clients cannot trigger builds, syncs or file changes.
+- **Known template gap.** The template's own `/auth/token` endpoint issues placeholder tokens. Clients should get tokens from your identity provider; this server only validates them.
 
 ## Project layout
 
@@ -301,10 +379,14 @@ okf_mcp_server/src/
 ├── tools/          # browse_knowledge, search_knowledge, get_knowledge (one file each)
 ├── knowledge/      # bundle reader, FTS5 + vector index, embeddings, snapshots, cursors, validation
 ├── ingest/         # okf-ingest CLI, pipeline, native extractors, Docling adapter, eval
-└── oauth/, storage/                        # template OAuth (not yet used by the tools)
+├── connectors/     # fileshare, SharePoint (Graph), Google Drive; mirror sync; connectors.yaml
+└── oauth/, storage/                        # template OAuth: token validation feeds the caller identity
 samples/finance/     # synthetic pilot corpus and _okf.yaml
-tests/               # unit, ingestion, tool and protocol tests
-deployment/openshift # template manifests plus a read-only knowledge PVC
+samples/northwind/   # synthetic messy-company benchmark (generator + questions)
+samples/gitlab-handbook/  # Phase 1 pilot on a real public HR corpus (fetch script + questions)
+tests/               # unit, ingestion, tool, access, connector and protocol tests
+tests/e2e/           # Keycloak auth, Kubernetes deployment and manifest validation
+deployment/          # base + kubernetes and openshift overlays
 ```
 
 ## Development
@@ -316,11 +398,14 @@ make coverage         # 80% minimum, as enforced in CI
 pytest -m docling     # Docling adapter tests (needs `make ingest-install`)
 make pre-commit       # ruff, ruff-format, mypy, pydocstyle, bandit, file checks
 pytest tests/test_http.py  # starts the real server and checks MCP over HTTP
+python tests/e2e/auth_e2e.py          # real Keycloak + PostgreSQL in Docker
+python tests/e2e/k8s_e2e.py           # deployment on a Kubernetes cluster (default context: orbstack)
+tests/e2e/validate_manifests.sh       # kubeconform, strict, incl. OpenShift schemas
 ```
 
 - CI runs the main suite on Python 3.12 and 3.13 without Docling. The adapter is excluded from coverage and tested by a separate `ingest` job with the extra installed.
 - New tools follow the template's docstring metadata format and raise `fastmcp.exceptions.ToolError` on failure. A returned `{"status": "error"}` payload would reach clients as a success.
-- Containers: `make container` (Podman Compose). Compose publishes the MCP port on `127.0.0.1` only, mounts `./data` read-only, and starts PostgreSQL only with `--profile auth`.
+- Containers: `make container` (Podman or Docker Compose; `OKF_HOST_PORT` sets the host port). Compose publishes the MCP port on `127.0.0.1` only, mounts `./data` read-only, and starts PostgreSQL only with `--profile auth`.
 
 ## Troubleshooting
 
@@ -329,7 +414,9 @@ pytest tests/test_http.py  # starts the real server and checks MCP over HTTP
 | `address already in use` on start, or `/health` answers with another service's name | Port 5001 is taken. Set `MCP_PORT=5055` in `.env` and use that port in the client URL. |
 | `421 Invalid Host header` / `403 Invalid Origin header` | The client is not connecting via `localhost`/`127.0.0.1`, or a browser page sent a foreign `Origin`. This is intended while auth is off. |
 | Tool error: *no knowledge snapshot is published* | Run `make sample` or `okf-ingest build <folder>`, and check that `OKF_DATA_DIR` matches. |
-| Tool error: *fails closed* | `ENABLE_AUTH` is on. Use `ENABLE_AUTH=False` for the local pilot. |
+| Tool error: *fails closed* | Auth is on but the request carried no validated identity (for example browser-auth mode). Send a bearer token, or use `ENABLE_AUTH=False` for the local pilot. |
+| 403 with a valid token | The token's audience does not include `OKF_REQUIRED_AUDIENCE`, or it lacks `OKF_REQUIRED_SCOPE`. Add an audience mapper for the MCP client in your identity provider. |
+| Search finds nothing for a user | Their groups match no document's access list, or documents have none and `OKF_DEFAULT_ACCESS=deny`. Check the token's groups claim and `_okf.yaml`. |
 | Every request returns 401 | The server started without `.env`, so auth defaulted to on. Run `make local` or create `.env` first. |
 | `snapshot … NOT published` | Read the `FAILED`/`INVALID` lines above it. Fix the files, or pass `--allow-failures`. |
 | First PDF build is slow | Docling is downloading its models once; see [Offline and air-gapped use](#offline-and-air-gapped-use). |
@@ -341,12 +428,14 @@ Tracked in detail in [PLAN.md](PLAN.md).
 
 - [x] Ingestion to OKF v0.2 with provenance, validation and atomic snapshots
 - [x] Browse, search and fetch MCP tools with trust and lifecycle signals
-- [ ] Pilot on a real department corpus with ~30 real questions (phase 1)
-- [ ] Per-user authentication and permission filtering, synchronized with source systems (phase 5)
 - [x] Hybrid keyword + semantic search with a local embedding model
-- [ ] Move vectors to pgvector or sqlite-vec when the corpus outgrows in-memory search
-- [ ] Connectors (SharePoint, Google Drive, file shares), scheduled refresh, audit logs
-- [ ] Container image and OpenShift deployment verified end to end
+- [x] Pilot on a real department corpus (GitLab Handbook HR, 94 pages, 30 questions): Hit@5 0.93
+- [x] Per-user authentication and permission filtering, synchronized from source systems; audit log
+- [x] sqlite-vec backend chosen automatically when the corpus outgrows in-memory search
+- [x] Connectors (file shares, SharePoint, Google Drive) and scheduled refresh
+- [x] Container image and Kubernetes deployment verified end to end; OpenShift manifests schema-validated
+- [ ] Pilot on your own department's documents with questions from its users
+- [ ] SharePoint and Google Drive against a live tenant; OpenShift on a live cluster
 
 ## Acknowledgements
 

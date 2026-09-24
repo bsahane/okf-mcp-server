@@ -15,7 +15,7 @@
 
 ## Deploying to OpenShift
 
-The OpenShift manifests live in `deployment/openshift/` (Deployment, Service, Route, ConfigMap, Secret, BuildConfig, ImageStream, Kustomization).
+Manifests are a shared `deployment/base/` (Deployment, Service, ConfigMap, Secret, PVC, refresh CronJob, connectors ConfigMap) with two overlays: `deployment/openshift/` adds BuildConfig, ImageStream and Route; `deployment/kubernetes/` sets a local image for plain Kubernetes. See the README section *Deploy on Kubernetes or OpenShift*.
 
 Quick start:
 
@@ -29,7 +29,7 @@ make undeploy openshift
 
 ### PostgreSQL Requirement
 
-The OpenShift manifests **do not include a PostgreSQL deployment**. If you enable authentication (`ENABLE_AUTH=True`), you must provision PostgreSQL separately and point the `POSTGRES_*` values in `deployment/openshift/secret.yaml` to it.
+The OpenShift manifests **do not include a PostgreSQL deployment**. If you enable authentication (`ENABLE_AUTH=True`), you must provision PostgreSQL separately and point `POSTGRES_HOST`/`POSTGRES_PORT`/`POSTGRES_DB` in `deployment/base/configmap.yaml` and the credentials in `deployment/base/secret.yaml` to it.
 
 Common approaches:
 
