@@ -31,6 +31,7 @@ from okf_mcp_server.src.ingest.extract import (
     ExtractedSection,
     extract,
 )
+from okf_mcp_server.src.knowledge.access import normalize_access
 from okf_mcp_server.src.knowledge.bundle import (
     FENCE,
     HEADING,
@@ -103,9 +104,14 @@ def load_config(source_root: Path) -> Dict[str, Any]:
     config = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     if not isinstance(config, dict):
         raise ValueError(f"{CONFIG_FILE} must be a mapping")
-    for key in ("types", "documents"):
+    for key in ("types", "documents", "access"):
         if not isinstance(config.get(key, {}), dict):
             raise ValueError(f"{CONFIG_FILE}: `{key}` must be a mapping")
+    for prefix, rule in (config.get("access") or {}).items():
+        try:
+            normalize_access(rule)
+        except (ValueError, TypeError, AttributeError) as e:
+            raise ValueError(f"{CONFIG_FILE}: access[{prefix!r}]: {e}") from e
     for rel, doc in (config.get("documents") or {}).items():
         if not isinstance(doc, dict):
             raise ValueError(f"{CONFIG_FILE}: documents[{rel!r}] must be a mapping")
@@ -113,6 +119,13 @@ def load_config(source_root: Path) -> Dict[str, Any]:
             raise ValueError(
                 f"{CONFIG_FILE}: documents[{rel!r}].status must be one of {STATUSES}"
             )
+        if "access" in doc:
+            try:
+                normalize_access(doc["access"])
+            except (ValueError, TypeError, AttributeError) as e:
+                raise ValueError(
+                    f"{CONFIG_FILE}: documents[{rel!r}].access: {e}"
+                ) from e
         for event in doc.get("verified") or []:
             if (
                 not isinstance(event, dict)
@@ -123,6 +136,49 @@ def load_config(source_root: Path) -> Dict[str, Any]:
                     f"{CONFIG_FILE}: documents[{rel!r}].verified needs `by` and `at`"
                 )
     return config
+
+
+SOURCE_ACL_FILE = ".okf/access.json"
+
+
+def load_source_acls(source_root: Path) -> Dict[str, List[str]]:
+    """Per-file permissions recorded by a connector from the source system.
+
+    `.okf/access.json` maps source-relative paths to principal lists. It is
+    rewritten on every sync, so permission changes and revocations in the
+    source reach the next build.
+
+    Raises:
+        ValueError: If the file is malformed.
+    """
+    path = source_root / SOURCE_ACL_FILE
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        acls = {str(rel): normalize_access(rule) or [] for rel, rule in data.items()}
+    except (ValueError, TypeError, AttributeError) as e:
+        raise ValueError(f"{SOURCE_ACL_FILE}: {e}") from e
+    return acls
+
+
+def access_for(
+    rel: str, config: Dict[str, Any], source_acls: Dict[str, List[str]]
+) -> Optional[List[str]]:
+    """Access list for a document: per-document config, then source, then prefix rule.
+
+    None means no rule applies; the server's OKF_DEFAULT_ACCESS then decides.
+    """
+    doc = (config.get("documents") or {}).get(rel) or {}
+    if "access" in doc:
+        return normalize_access(doc["access"])
+    if rel in source_acls:
+        return source_acls[rel]
+    rules = config.get("access") or {}
+    matches = [p for p in rules if rel.startswith(p)]
+    if matches:
+        return normalize_access(rules[max(matches, key=len)])
+    return None
 
 
 def discover(source_root: Path) -> List[Path]:
@@ -429,6 +485,7 @@ def _build(
     now = now or datetime.now(timezone.utc)
     config = load_config(source_root)
     docs_config = config.get("documents") or {}
+    source_acls = load_source_acls(source_root)
 
     prev: Optional[Snapshot] = None
     prev_manifest: Dict[str, Dict[str, Any]] = {}
@@ -563,6 +620,9 @@ def _build(
             fm["stale_after"] = _iso_value(cfg["stale_after"])
         fm["source_revision"] = revision
         fm["source_path"] = rel
+        access = access_for(rel, config, source_acls)
+        if access is not None:
+            fm["access"] = access
 
         cid = concept_ids[rel]
         target = snap.bundle / f"{cid}.md"

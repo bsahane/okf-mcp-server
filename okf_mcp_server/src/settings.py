@@ -339,6 +339,52 @@ class Settings(BaseSettings):
             "example": True,
         },
     )
+    OKF_DEFAULT_ACCESS: Literal["deny", "authenticated"] = Field(
+        default="deny",
+        json_schema_extra={
+            "env": "OKF_DEFAULT_ACCESS",
+            "description": (
+                "With authentication on, who may see documents that have no access "
+                "list: `deny` (nobody, fail closed) or `authenticated` (any signed-in user)"
+            ),
+            "example": "deny",
+        },
+    )
+    OKF_REQUIRED_AUDIENCE: str = Field(
+        default="",
+        json_schema_extra={
+            "env": "OKF_REQUIRED_AUDIENCE",
+            "description": "Reject tokens whose aud/azp does not include this value (e.g. okf-mcp)",
+            "example": "okf-mcp",
+        },
+    )
+    OKF_REQUIRED_SCOPE: str = Field(
+        default="",
+        json_schema_extra={
+            "env": "OKF_REQUIRED_SCOPE",
+            "description": "Reject tokens without this OAuth scope (empty: no scope check)",
+            "example": "okf.read",
+        },
+    )
+    OKF_GROUPS_CLAIM: str = Field(
+        default="groups",
+        json_schema_extra={
+            "env": "OKF_GROUPS_CLAIM",
+            "description": "Token claim holding the caller's groups",
+            "example": "groups",
+        },
+    )
+    OKF_AUDIT_LOG: str = Field(
+        default="",
+        json_schema_extra={
+            "env": "OKF_AUDIT_LOG",
+            "description": (
+                "Append one JSON line per tool call to this file (who, what, which "
+                "documents were returned); always also logged as `okf.audit` events"
+            ),
+            "example": "/var/log/okf/audit.jsonl",
+        },
+    )
 
     @model_validator(mode="after")
     def validate_oauth_scopes(self) -> "Settings":

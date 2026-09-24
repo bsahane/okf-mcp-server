@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from okf_mcp_server.src.knowledge.access import AccessError, identity_from_claims
 from okf_mcp_server.src.knowledge.service import warm_up_search
 from okf_mcp_server.src.mcp import OKFMCPServer
 from okf_mcp_server.src.oauth.handler import OAuth2Handler
@@ -133,6 +134,24 @@ class AuthorizationMiddleware(BaseHTTPMiddleware):
                 status_code=401,
                 headers={"WWW-Authenticate": "Bearer"},
             )
+
+        # Pass the validated caller to the tools on the request scope; tools
+        # read it back with FastMCP's get_http_request() and fail closed without it.
+        try:
+            identity = identity_from_claims(
+                token_info,
+                required_audience=settings.OKF_REQUIRED_AUDIENCE,
+                required_scope=settings.OKF_REQUIRED_SCOPE,
+                groups_claim=settings.OKF_GROUPS_CLAIM,
+            )
+        except AccessError as e:
+            logger.warning(f"Rejected token for {request.url.path}: {e}")
+            return Response(
+                content="Forbidden",
+                status_code=403,
+                headers={"WWW-Authenticate": 'Bearer error="insufficient_scope"'},
+            )
+        request.state.okf_identity = identity
 
         response = await call_next(request)
         return response

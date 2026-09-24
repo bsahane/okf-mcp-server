@@ -19,7 +19,7 @@ from okf_mcp_server.src.knowledge.paging import (
     decode_cursor,
     encode_cursor,
 )
-from okf_mcp_server.src.knowledge.service import open_snapshot
+from okf_mcp_server.src.knowledge.service import audit, caller, can_see, open_snapshot
 from okf_mcp_server.utils.pylogger import get_python_logger
 
 logger = get_python_logger()
@@ -51,10 +51,15 @@ def get_knowledge(
     Raises:
         ToolError: For unknown concepts or sections, invalid cursors or paths outside the bundle.
     """
+    identity = caller()
     snapshot = open_snapshot()
     size = max(500, min(int(page_size), MAX_PAGE_CHARS))
     try:
         fm, body = read_concept(snapshot.bundle, concept_id)
+        if not can_see(identity, fm):
+            # Same message as a missing concept, so existence is not revealed.
+            audit("get_knowledge", identity, concept_id=concept_id, outcome="denied")
+            raise BundleError(f"concept not found: {concept_id}")
         cid = concept_id.strip().strip("/").removesuffix(".md")
         sections = split_sections(body)
         if section:
@@ -73,6 +78,15 @@ def get_knowledge(
     page = content[offset : offset + size]
     more = offset + size < len(content)
     logger.info(f"get_knowledge {cid} section={section!r} offset={offset}")
+    audit(
+        "get_knowledge",
+        identity,
+        snapshot_id=snapshot.id,
+        concept_id=cid,
+        section=section,
+        offset=offset,
+        outcome="ok",
+    )
     return {
         "status": "success",
         "operation": "get_knowledge",

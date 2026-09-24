@@ -13,7 +13,7 @@ from okf_mcp_server.src.knowledge.paging import (
     decode_cursor,
     encode_cursor,
 )
-from okf_mcp_server.src.knowledge.service import open_snapshot
+from okf_mcp_server.src.knowledge.service import audit, caller, can_see, open_snapshot
 from okf_mcp_server.utils.pylogger import get_python_logger
 
 logger = get_python_logger()
@@ -44,12 +44,21 @@ def browse_knowledge(
     Raises:
         ToolError: For invalid paths, cursors or when no snapshot is published.
     """
+    identity = caller()
     snapshot = open_snapshot()
     size = max(1, min(int(page_size), MAX_PAGE_SIZE))
     target = f"browse:{path.strip().strip('/')}"
     try:
         offset = decode_cursor(cursor, snapshot.id, target)
-        entries = list_directory(snapshot.bundle, path)
+        entries = list_directory(
+            snapshot.bundle,
+            path,
+            visible=None if identity.trusted else lambda fm: can_see(identity, fm),
+        )
+        if not entries and path.strip("/ ") and not identity.trusted:
+            # Bundle folders only exist because they hold concepts: an empty
+            # listing means none are visible, reported as missing.
+            raise BundleError(f"directory not found: {path}")
     except (BundleError, CursorError) as e:
         raise ToolError(str(e)) from e
 
@@ -57,6 +66,13 @@ def browse_knowledge(
     more = offset + size < len(entries)
     logger.info(
         f"browse_knowledge path={path!r} returned {len(page)} of {len(entries)}"
+    )
+    audit(
+        "browse_knowledge",
+        identity,
+        snapshot_id=snapshot.id,
+        path=path,
+        returned=[e.get("concept_id") or e.get("path") for e in page],
     )
     return {
         "status": "success",

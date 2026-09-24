@@ -8,7 +8,14 @@ from typing import Any, Dict, List, Optional
 from fastmcp.exceptions import ToolError
 
 from okf_mcp_server.src.knowledge.index import MAX_LIMIT, SearchIndex, SearchIndexError
-from okf_mcp_server.src.knowledge.service import open_snapshot, search_embedder
+from okf_mcp_server.src.knowledge.service import (
+    audit,
+    caller,
+    open_snapshot,
+    principals_for,
+    search_embedder,
+    settings,
+)
 from okf_mcp_server.utils.pylogger import get_python_logger
 
 logger = get_python_logger()
@@ -43,6 +50,7 @@ def search_knowledge(
         raise ToolError("query must be a non-empty string")
     if len(query) > MAX_QUERY_CHARS:
         raise ToolError(f"query must be at most {MAX_QUERY_CHARS} characters")
+    identity = caller()
     snapshot = open_snapshot()
     try:
         with SearchIndex(snapshot.index, embedder=search_embedder()) as index:
@@ -54,11 +62,23 @@ def search_knowledge(
                 type_=type,
                 tags=tags or [],
                 limit=max(1, min(int(limit), MAX_LIMIT)),
+                principals=principals_for(identity),
+                default_access=settings.OKF_DEFAULT_ACCESS,
             )
     except SearchIndexError as e:
         raise ToolError(str(e)) from e
 
     logger.info(f"search_knowledge returned {len(results)} results")
+    audit(
+        "search_knowledge",
+        identity,
+        snapshot_id=snapshot.id,
+        query=query,
+        type=type,
+        tags=tags or [],
+        search_mode=mode,
+        returned=[f"{r['concept_id']}#{r['section']}" for r in results],
+    )
     return {
         "status": "success",
         "operation": "search_knowledge",

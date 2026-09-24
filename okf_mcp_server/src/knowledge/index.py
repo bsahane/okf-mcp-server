@@ -16,7 +16,7 @@ import sqlite3
 import unicodedata
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Protocol, Sequence, Tuple
 
 import numpy as np
 
@@ -80,6 +80,7 @@ CREATE TABLE passages (
     source_uri TEXT,
     source_revision TEXT,
     location TEXT NOT NULL,
+    access TEXT,
     fts_title TEXT NOT NULL,
     fts_section TEXT NOT NULL,
     fts_text TEXT NOT NULL
@@ -236,8 +237,8 @@ def build_index(
                     conn.execute(
                         "INSERT INTO passages (concept_id, section, section_title, text, title,"
                         " type, tags, status, stale_after, verified, source_id, source_uri,"
-                        " source_revision, location, fts_title, fts_section, fts_text)"
-                        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        " source_revision, location, access, fts_title, fts_section,"
+                        " fts_text) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             concept_id,
                             section.slug,
@@ -253,6 +254,7 @@ def build_index(
                             source.get("resource"),
                             fm.get("source_revision"),
                             json.dumps(locations.get(section.slug, {})),
+                            json.dumps(fm["access"]) if "access" in fm else None,
                             search_form(str(fm.get("title") or concept_id)),
                             search_form(section.title),
                             search_form(text),
@@ -398,8 +400,16 @@ class SearchIndex:
         return "hybrid" if self.embedder else "keyword"
 
     def _filter_sql(
-        self, type_: Optional[str], tags: Sequence[str]
+        self,
+        type_: Optional[str],
+        tags: Sequence[str],
+        principals: Optional[FrozenSet[str]] = None,
+        default_access: str = "deny",
     ) -> Tuple[str, List[Any]]:
+        """SQL filter fragment (fixed text, `?` placeholders) and its parameters.
+
+        `principals` None means a trusted caller: no access filter.
+        """
         sql, params = "", []
         if type_:
             sql += " AND p.type = ?"
@@ -407,6 +417,14 @@ class SearchIndex:
         for tag in tags:
             sql += " AND EXISTS (SELECT 1 FROM json_each(p.tags) WHERE value = ?)"
             params.append(tag)
+        if principals is not None:
+            marks = ",".join("?" * len(principals))  # placeholders only
+            # Principals are bound parameters; only "?" placeholders are interpolated.
+            sql += (
+                " AND ((p.access IS NULL AND ? = 'authenticated')"  # nosec B608
+                f" OR EXISTS (SELECT 1 FROM json_each(p.access) WHERE value IN ({marks})))"
+            )
+            params += [default_access, *sorted(principals)]
         return sql, params
 
     def _keyword_ids(
@@ -453,8 +471,15 @@ class SearchIndex:
         type_: Optional[str] = None,
         tags: Sequence[str] = (),
         limit: int = 5,
+        principals: Optional[FrozenSet[str]] = None,
+        default_access: str = "deny",
     ) -> List[Dict[str, Any]]:
         """Return up to `limit` ranked sections with trust and lifecycle signals.
+
+        With `principals` (an untrusted caller), only passages whose access
+        list contains one of them are candidates; unlabelled passages follow
+        `default_access`. Filtering happens before ranking, so hidden
+        documents never take a result slot.
 
         Keyword and (when available) semantic rankings are fused with
         reciprocal-rank fusion. Each section appears once, represented by its
@@ -465,7 +490,7 @@ class SearchIndex:
         # ponytail: fixed candidate pool; a section with more passages than the
         # pool could still crowd out others. Use a window query if that shows up.
         pool = limit * CANDIDATES_PER_RESULT
-        where, params = self._filter_sql(type_, tags)
+        where, params = self._filter_sql(type_, tags, principals, default_access)
         rankings = {
             "keyword": self._keyword_ids(query, where, params, pool),
             "semantic": self._semantic_ids(query, where, params, pool),

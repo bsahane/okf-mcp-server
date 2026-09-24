@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -240,13 +240,19 @@ def iter_concepts(bundle_root: Path):
         yield path.relative_to(root).with_suffix("").as_posix(), path
 
 
-def list_directory(bundle_root: Path, relative: str) -> List[Dict[str, Any]]:
+def list_directory(
+    bundle_root: Path,
+    relative: str,
+    visible: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> List[Dict[str, Any]]:
     """Synthesize a directory listing from the files on disk.
 
     Subdirectories come first, then concepts, each sorted by name. Listings
     are always built from concept frontmatter (never by returning a stored
     `index.md`), so per-entry filtering can be applied before anything is
-    returned.
+    returned. With `visible` (a frontmatter predicate), hidden concepts are
+    omitted, directories count only visible concepts, and directories with
+    none are omitted, so a listing reveals nothing the caller cannot open.
 
     Raises:
         BundleError: If the path is not a directory inside the bundle.
@@ -255,6 +261,14 @@ def list_directory(bundle_root: Path, relative: str) -> List[Dict[str, Any]]:
     if not directory.is_dir():
         raise BundleError(f"directory not found: {relative or '/'}")
     root = bundle_root.resolve()
+
+    def shown(path: Path) -> Optional[Dict[str, Any]]:
+        try:
+            fm, _ = split_frontmatter(path.read_text(encoding="utf-8"))
+        except BundleError:
+            return None
+        return fm if visible is None or visible(fm) else None
+
     subdirs: List[Dict[str, Any]] = []
     concepts: List[Dict[str, Any]] = []
     for child in sorted(directory.iterdir(), key=lambda p: p.name):
@@ -262,13 +276,16 @@ def list_directory(bundle_root: Path, relative: str) -> List[Dict[str, Any]]:
             continue
         rel = child.resolve().relative_to(root).as_posix()
         if child.is_dir():
-            count = sum(1 for _ in iter_concepts(child))
-            subdirs.append({"kind": "directory", "path": rel, "concept_count": count})
+            # ponytail: reads every concept below; cache per snapshot if large trees are slow.
+            count = sum(
+                1 for _, path in iter_concepts(child) if shown(path) is not None
+            )
+            if count or visible is None:
+                subdirs.append(
+                    {"kind": "directory", "path": rel, "concept_count": count}
+                )
         elif child.suffix == ".md" and child.name not in RESERVED_FILENAMES:
-            concept_id = rel[:-3]
-            try:
-                fm, _ = split_frontmatter(child.read_text(encoding="utf-8"))
-            except BundleError:
-                continue
-            concepts.append({"kind": "concept", **concept_summary(concept_id, fm)})
+            fm = shown(child)
+            if fm is not None:
+                concepts.append({"kind": "concept", **concept_summary(rel[:-3], fm)})
     return subdirs + concepts
