@@ -308,6 +308,7 @@ def _extraction_record(
         "revision": revision,
         "extractor": doc.extractor,
         "title": doc.title,
+        "description": doc.description,
         "sections": [
             {
                 "slug": slug,
@@ -326,6 +327,7 @@ def _doc_from_record(record: Dict[str, Any]) -> ExtractedDoc:
     return ExtractedDoc(
         extractor=record["extractor"],
         title=record.get("title"),
+        description=record.get("description"),
         raw=record.get("docling"),
         sections=[
             ExtractedSection(
@@ -599,8 +601,8 @@ def _build(
             "type": type_for(rel, config),
             "title": str(cfg.get("title") or doc.title or _fallback_title(rel, doc)),
         }
-        if cfg.get("description"):
-            fm["description"] = str(cfg["description"])
+        if cfg.get("description") or doc.description:
+            fm["description"] = str(cfg.get("description") or doc.description)
         fm["resource"] = uri
         if cfg.get("tags"):
             fm["tags"] = [str(t) for t in cfg["tags"]]

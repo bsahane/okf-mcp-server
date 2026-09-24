@@ -1,0 +1,72 @@
+# Phase 1 pilot on a real, public department corpus: the GitLab Handbook's
+# People Group and Total Rewards sections (commit 67bc662). Questions were
+# written from the list of page titles only, phrased as an employee would ask,
+# before reading the pages. Expected entries are concept IDs.
+questions:
+  - question: Will GitLab sponsor my work visa if I move countries?
+    expected: [people-group/visas]
+  - question: Can I relocate to another country and keep my job?
+    expected: [people-group/relocation]
+  - question: How much time off can I take and do I need approval?
+    expected: [people-group/time-off-and-absence/time-off-types, people-group/time-off-and-absence/time-away-philosophy]
+  - question: What leave do I get when I have a baby?
+    expected: [people-group/time-off-and-absence/leave-types, total-rewards/benefits/parental-leave-toolkit]
+  - question: How do I report harassment at work?
+    expected: [people-group/anti-harassment]
+  - question: Am I allowed to install my own software on my work laptop?
+    expected: [people-group/acceptable-use-policy]
+  - question: How long is the probation period for new hires?
+    expected: [people-group/contracts-probation-periods]
+  - question: Do new employees get a buddy during onboarding?
+    expected: [people-group/general-onboarding/onboarding-buddies]
+  - question: What happens to my laptop and accounts when I leave the company?
+    expected: [people-group/offboarding/faq, people-group/offboarding/index-doc, people-group/offboarding/offboarding_standards]
+  - question: How does the promotion process work?
+    expected: [people-group/promotions-transfers, people-group/promotion-document-style-guide]
+  - question: Can I apply for an internal transfer to another team?
+    expected: [people-group/promotions-transfers]
+  - question: Is there a budget for courses and conferences?
+    expected: [people-group/learning-and-development/growth-and-development/index-doc]
+  - question: Are learning reimbursements taxed?
+    expected: [people-group/learning-and-development/growth-and-development/tax]
+  - question: How do I find a mentor?
+    expected: [people-group/learning-and-development/mentor/index-doc]
+  - question: I just became a manager, is there training for that?
+    expected: [people-group/learning-and-development/manager-development/index-doc, people-group/learning-and-development/elevate-programs/index-doc]
+  - question: How do I give feedback to a colleague?
+    expected: [people-group/guidance-on-feedback, people-group/360-feedback]
+  - question: When is the annual compensation review?
+    expected: [total-rewards/compensation/compensation-review-cycle/index-doc]
+  - question: Do employees get stock options?
+    expected: [total-rewards/stock-options]
+  - question: Is there a bonus or incentive for referring candidates?
+    expected: [total-rewards/incentives]
+  - question: What health insurance do US employees get?
+    expected: [total-rewards/benefits/general-and-entity-benefits/inc-benefits-us/index-doc]
+  - question: What pension benefits are there in the UK?
+    expected: [total-rewards/benefits/general-and-entity-benefits/ltd-benefits-uk]
+  - question: What benefits do employees in the Netherlands get?
+    expected: [total-rewards/benefits/general-and-entity-benefits/bv-benefits-netherlands]
+  - question: Is there mental health support like therapy or coaching?
+    expected: [total-rewards/benefits/modern-health]
+  - question: Does the company help with financial planning?
+    expected: [total-rewards/benefits/general-and-entity-benefits/financial-wellness]
+  - question: Can I take paid time off to volunteer?
+    expected: [people-group/givelab-volunteer-initiatives]
+  - question: How should I use someone's pronouns?
+    expected: [people-group/pronouns]
+  - question: What is a DRI?
+    expected: [people-group/directly-responsible-individuals]
+  - question: How do engagement surveys work and are they anonymous?
+    expected: [people-group/engagement]
+  - question: Who do I contact about a conflict with my manager?
+    expected: [people-group/team-member-relations, people-group/people-business-partners/index-doc]
+  - question: How are employees in countries without a GitLab entity employed?
+    expected: [total-rewards/benefits/general-and-entity-benefits/global-expansion, people-group/employment-solutions, total-rewards/benefits/general-and-entity-benefits/remote-com]
+  # No answer in these sections:
+  - question: What is the company car policy?
+    expected: []
+  - question: How do I book a desk in the office?
+    expected: []
+  - question: What is the dress code for customer visits?
+    expected: []

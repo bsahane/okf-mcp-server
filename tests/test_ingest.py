@@ -733,3 +733,27 @@ class TestRetrievalGaps:
         )
         assert build(corpus, data).reused == 0
         assert build(corpus, data).reused == 4
+
+
+def test_source_frontmatter_title_and_description(tmp_path, corpus_writer):
+    src = corpus_writer(
+        tmp_path / "s",
+        {
+            "visas.md": '---\ntitle: "Visas"\ndescription: "Travel visas and immigration."\nweight: 3\n---\n\n## Policy\n\nNo sponsorship.\n',
+            "broken.md": "---\ntitle: [unclosed\n---\n\n# Heading Title\n\nBody.\n",
+            "override.md": "---\ntitle: From Source\n---\n\n# H\n\ntext\n",
+            "_okf.yaml": "documents:\n  override.md: {title: From Config, description: Config wins}\n",
+        },
+    )
+    data = tmp_path / "data"
+    assert build(src, data).published
+    bundle = current_snapshot(data).bundle
+    fm, body = split_frontmatter((bundle / "visas.md").read_text())
+    assert (
+        fm["title"] == "Visas" and fm["description"] == "Travel visas and immigration."
+    )
+    assert "weight" not in fm and "No sponsorship." in body and "title:" not in body
+    fm, _ = split_frontmatter((bundle / "broken.md").read_text())
+    assert fm["title"] == "Heading Title" and "description" not in fm
+    fm, _ = split_frontmatter((bundle / "override.md").read_text())
+    assert fm["title"] == "From Config" and fm["description"] == "Config wins"

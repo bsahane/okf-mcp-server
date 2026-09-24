@@ -9,11 +9,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from okf_mcp_server.src.knowledge.bundle import FENCE, HEADING, split_sections
 
 # Bump when extraction output changes, so rebuilds re-extract unchanged files
-# instead of reusing stale results (2: Docling formulas kept as text).
-EXTRACTOR_VERSION = 2
+# instead of reusing stale results (2: Docling formulas kept as text;
+# 3: source frontmatter title/description kept).
+EXTRACTOR_VERSION = 3
 NATIVE_SUFFIXES = {".md", ".markdown", ".txt"}
 DOCLING_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".csv"}
 SUPPORTED_SUFFIXES = NATIVE_SUFFIXES | DOCLING_SUFFIXES
@@ -37,17 +40,25 @@ class ExtractedDoc:
     sections: List[ExtractedSection]
     title: Optional[str] = None
     raw: Optional[Dict[str, Any]] = None
+    description: Optional[str] = None
 
 
 def extract_native(path: Path) -> ExtractedDoc:
     """Extract Markdown or plain text without third-party dependencies."""
     text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
     skipped = 0
+    source_meta: Dict[str, Any] = {}
     if path.suffix.lower() != ".txt" and text.startswith("---\n"):
-        # Drop any existing frontmatter; the ingest config owns metadata.
+        # Strip existing frontmatter (Hugo, Jekyll, MkDocs...) from the body,
+        # keeping only its title and description; `_okf.yaml` still overrides them.
         source_lines = text.split("\n")
         for end in range(1, len(source_lines)):
             if source_lines[end].strip() == "---":
+                try:
+                    loaded = yaml.safe_load("\n".join(source_lines[1:end]))
+                except yaml.YAMLError:
+                    loaded = None
+                source_meta = loaded if isinstance(loaded, dict) else {}
                 skipped = end + 1
                 while skipped < len(source_lines) and not source_lines[skipped]:
                     skipped += 1
@@ -88,7 +99,20 @@ def extract_native(path: Path) -> ExtractedDoc:
         if sec.title:
             location["section"] = sec.title
         sections.append(ExtractedSection(sec.title, sec.level, sec.text, location))
-    return ExtractedDoc(extractor="native-markdown", sections=sections, title=title)
+    meta_title = source_meta.get("title")
+    meta_description = source_meta.get("description")
+    return ExtractedDoc(
+        extractor="native-markdown",
+        sections=sections,
+        title=" ".join(meta_title.split())
+        if isinstance(meta_title, str) and meta_title.strip()
+        else title,
+        description=(
+            " ".join(meta_description.split())
+            if isinstance(meta_description, str) and meta_description.strip()
+            else None
+        ),
+    )
 
 
 def extract(path: Path, artifacts_path: Optional[Path] = None) -> ExtractedDoc:
