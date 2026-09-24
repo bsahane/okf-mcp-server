@@ -6,7 +6,7 @@ services:
     container_name: okf-mcp-server
     ports:
       # Loopback only: the pilot runs without authentication.
-      - "127.0.0.1:5001:5001"
+      - "127.0.0.1:${OKF_HOST_PORT:-5001}:5001"
     env_file:
       - .env
     environment:

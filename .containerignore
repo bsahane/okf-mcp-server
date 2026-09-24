@@ -40,3 +40,23 @@ tests/
 # Container files themselves
 Containerfile
 .containerignore
+
+# Local environments, caches and data (never bake snapshots into images)
+.venv/
+venv/
+data/
+samples/
+examples/
+docs/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+coverage.xml
+.github/
+.devcontainer/
+deployment/
+PLAN.md
+VERIFICATION.md
+.claude/
+.coverage*

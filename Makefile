@@ -87,9 +87,12 @@ local: ## Start MCP server locally
 	@echo "Press Ctrl+C to stop the server"
 	@. .venv/bin/activate && python -m okf_mcp_server.src.main
 
-container: ## Build and run with podman compose
+# Podman if installed, otherwise Docker (both provide `compose`).
+CONTAINER_TOOL ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
+
+container: ## Build and run with podman/docker compose
 	export PODMAN_COMPOSE_SILENT=true
-	podman compose --no-ansi up --build --force-recreate --remove-orphans  --timeout=60
+	$(CONTAINER_TOOL) compose up --build --force-recreate --remove-orphans --timeout=60
 
 deploy: ## Deploy to target (usage: make deploy openshift)
 	@if [ "$(filter openshift,$(MAKECMDGOALS))" = "openshift" ]; then \
