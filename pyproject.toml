@@ -46,7 +46,7 @@ ingest = [
 dev = [
     "pytest==8.4.1",
     "pytest-asyncio==1.0.0",
-    "pytest-cov==6.2.1",
+    "pytest-cov==7.1.0",
     "ruff==0.12.2",
     "mypy==1.16.1",
     "pre-commit==4.2.0",
