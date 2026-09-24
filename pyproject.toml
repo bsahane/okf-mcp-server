@@ -37,11 +37,17 @@ dependencies = [
     "itsdangerous==2.2.0",
     "requests-oauthlib==2.0.0",
     "pyyaml==6.0.3",
+    "numpy==2.5.3",
 ]
 
 [project.optional-dependencies]
 ingest = [
     "docling==2.95.0",
+]
+# Semantic search in the server without Docling (versions as resolved with docling).
+semantic = [
+    "torch==2.14.0",
+    "transformers==5.8.1",
 ]
 dev = [
     "pytest==8.4.1",
@@ -107,6 +113,7 @@ asyncio_mode = "auto"
 markers = [
     "asyncio",
     "docling: requires the ingest extra (Docling)",
+    "semantic: needs the embedding model (okf-ingest fetch-model); skipped otherwise",
 ]
 
 [tool.coverage.run]

@@ -57,6 +57,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="show Docling/OCR/model logs and progress bars",
     )
     b.add_argument(
+        "--no-embeddings",
+        action="store_true",
+        help="skip the semantic index (keyword search only)",
+    )
+    b.add_argument(
         "--keep",
         type=int,
         default=3,
@@ -75,6 +80,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     s.add_argument("source", type=Path, help="folder of source documents")
 
+    sub.add_parser(
+        "fetch-model",
+        help="download the pinned embedding model for semantic search (~493 MB)",
+    )
+
     e = sub.add_parser("eval", help="measure Hit@k against a question set")
     e.add_argument("questions", type=Path, help="YAML question file")
     e.add_argument("-k", type=int, default=5)
@@ -92,6 +102,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 args.artifacts_path,
                 args.allow_failures,
                 keep=args.keep,
+                embeddings=not args.no_embeddings,
             )
         except ValueError as e:
             print(f"ERROR   {e}", file=sys.stderr)
@@ -112,11 +123,27 @@ def main(argv: Optional[List[str]] = None) -> int:
             f"{report.passages} passages, {report.reused} extractions reused, "
             f"{len(report.failures)} failures, {len(report.skipped)} skipped"
         )
+        if report.embedding_model:
+            print(
+                f"semantic index: {report.embedded} passages embedded, "
+                f"{report.vectors_reused} reused ({report.embedding_model.split('@')[0]})"
+            )
         if report.pruned:
             print(
                 f"removed {len(report.pruned)} old snapshot(s): {', '.join(report.pruned)}"
             )
         return 0 if report.published and not report.failures else 1
+
+    if args.command == "fetch-model":
+        from okf_mcp_server.src.knowledge.embed import (
+            MODEL_ID,
+            MODEL_REVISION,
+            fetch_model,
+        )
+
+        print(f"downloading {MODEL_ID} @ {MODEL_REVISION[:8]} from huggingface.co ...")
+        print(f"saved to {fetch_model()}")
+        return 0
 
     if args.command == "suggest-config":
         from okf_mcp_server.src.ingest.suggest import suggest_config

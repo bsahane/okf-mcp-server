@@ -29,6 +29,8 @@ async def test_http_retrieval_and_origin_protection(
         "MCP_PORT": str(unused_tcp_port),
         "MCP_TRANSPORT_PROTOCOL": "streamable-http",
         "OKF_DATA_DIR": str(published),
+        # Keyword-path smoke test: loading the embedding model would add ~5 s to startup.
+        "OKF_SEMANTIC_SEARCH": "False",
         "MCP_SSL_KEYFILE": "",
         "MCP_SSL_CERTFILE": "",
     }

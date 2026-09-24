@@ -328,6 +328,17 @@ class Settings(BaseSettings):
             "example": "/var/lib/okf",
         },
     )
+    OKF_SEMANTIC_SEARCH: bool = Field(
+        default=True,
+        json_schema_extra={
+            "env": "OKF_SEMANTIC_SEARCH",
+            "description": (
+                "Use hybrid keyword + semantic search when the index has vectors and "
+                "the local embedding model is installed; otherwise keyword only"
+            ),
+            "example": True,
+        },
+    )
 
     @model_validator(mode="after")
     def validate_oauth_scopes(self) -> "Settings":

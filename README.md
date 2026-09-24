@@ -48,7 +48,7 @@ flowchart LR
     A["Source folder<br/>PDF · DOCX · XLSX · PPTX<br/>HTML · MD · TXT"] -->|okf-ingest build| B["Extract<br/>Docling / native"]
     B --> C["OKF bundle<br/>+ extraction metadata"]
     C --> D{"Validate<br/>OKF v0.2 §11"}
-    D -->|pass| E["FTS5 index<br/>→ publish snapshot"]
+    D -->|pass| E["Keyword + vector index<br/>→ publish snapshot"]
     D -->|fail| X["Discard;<br/>previous snapshot<br/>keeps serving"]
     E --> F["MCP server<br/>browse · search · get"]
     F <-->|streamable HTTP| G["AI client<br/>Claude Code, …"]
@@ -57,7 +57,7 @@ flowchart LR
 1. **Extract.** Markdown and text are read natively. Everything else goes through [Docling](https://github.com/docling-project/docling), running locally. Page and sheet provenance is kept.
 2. **Write OKF.** One concept per source file, with frontmatter filled deterministically from file metadata and an optional `_okf.yaml`. **No generative model is involved in ingestion.**
 3. **Validate and publish.** The new snapshot must pass conformance checks before an atomic switch makes it live. A failed build never replaces a good snapshot.
-4. **Serve.** Three read-only MCP tools. The AI client composes the answer; the server supplies evidence.
+4. **Serve.** Three read-only MCP tools. Search is hybrid: keyword (BM25) and semantic (local embeddings) rankings are fused, so "doctor's note" finds a policy that says "fit note". The AI client composes the answer; the server supplies evidence.
 
 ## Quick start
 
@@ -68,6 +68,7 @@ git clone git@github.com:bsahane/okf-mcp-server.git
 cd okf-mcp-server
 make install          # venv, dev dependencies, pre-commit hooks; opens a subshell (type `exit` to leave)
 make ingest-install   # adds Docling for PDF/Office formats (large download)
+okf-ingest fetch-model  # optional: local embedding model for semantic search (~493 MB)
 make sample           # builds a snapshot from samples/finance into ./data
 make local            # serves http://localhost:5001/mcp
 ```
@@ -203,6 +204,16 @@ Very large embedded images (above about 179 megapixels) are refused by Pillow's 
 
 A reproducible synthetic benchmark lives in [samples/northwind](samples/northwind/README.md).
 
+### Semantic search
+
+Search combines two rankings with reciprocal-rank fusion: BM25 keywords, which are exact for codes and names, and a local multilingual embedding model ([intfloat/multilingual-e5-small](https://huggingface.co/intfloat/multilingual-e5-small), MIT, 94 languages, pinned revision), which matches meaning ("sign off a 25,000 purchase" finds the approval matrix). Each result reports `matched_by`: `keyword`, `semantic` or `both`.
+
+- **Setup:** `okf-ingest fetch-model` downloads the model once (~493 MB) into the Hugging Face cache. Nothing is downloaded at build or query time, and no text leaves the machine.
+- **Builds** embed every passage (69 passages/s on an Apple GPU, 17/s on CPU) and reuse vectors for unchanged passages, so a rebuild with no changes takes under a second and does not load the model. `--no-embeddings` builds keyword-only.
+- **Fallback:** without the model or the `semantic` extra (torch, transformers), builds warn and search is keyword-only. `OKF_SEMANTIC_SEARCH=false` forces keyword-only. The server image installs no torch, so it is keyword-only unless built with `.[semantic]` and given the model cache.
+- **Measured:** on the pilot papers, Hit@5 went from 0.81 to 0.94 and all-evidence from 0.69 to 0.81; on Northwind, Hit@1 went from 0.81 to 0.97; nothing got worse. Vector search always returns nearest neighbours, even for questions the corpus cannot answer, so the assistant must still judge relevance.
+- **Scale:** vectors are compared by brute force in memory (about 10 ms for 600 passages). That is fine for tens of thousands of passages; move to pgvector or sqlite-vec beyond that.
+
 ### Offline and air-gapped use
 
 Docling downloads layout models on its first PDF conversion. To run without network access, pre-download them and set `DOCLING_ARTIFACTS_PATH`, or pass `okf-ingest build --artifacts-path <dir>`.
@@ -238,7 +249,7 @@ Example `search_knowledge` result (trimmed):
 Behaviour worth knowing:
 
 - **Errors are real MCP errors.** Invalid input returns `isError: true`, and so does a path outside the bundle. An empty search is a *successful* result with no evidence, so the assistant can say it does not know.
-- **Search is keyword-based (SQLite FTS5, BM25), one result per section.** Exact codes such as `SKU-4471` match reliably, and Unicode math letters and ligatures from PDFs match plain words. Words must match exactly (no stemming), so assistants should search with key terms and try variants; the tool's instructions tell them so. Measure with `okf-ingest eval`, which accepts `concept#section` expectations, before adding embeddings.
+- **Search is hybrid and returns one result per section.** Exact codes such as `SKU-4471` match through keywords, paraphrases through embeddings (see [Semantic search](#semantic-search)), and Unicode math letters and ligatures from PDFs match plain words. `search_mode` says whether a request ran `hybrid` or `keyword`. Measure changes with `okf-ingest eval`, which accepts `concept#section` expectations and reports Hit@1, Hit@5, MRR and all-evidence.
 - **Pagination is snapshot-bound.** Once a new snapshot is published, older cursors ask the client to restart from the first page, so pages from two revisions are never mixed.
 - **Excerpts are capped.** Search excerpts are at most 1,500 characters. When `excerpt_truncated` is true (for example, one oversized table row), read the section with `get_knowledge` and follow its cursor.
 
@@ -249,6 +260,7 @@ Settings come from environment variables or `.env`. `make local` creates `.env` 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `OKF_DATA_DIR` | `./data` | Snapshot directory; `current` points at the snapshot being served. |
+| `OKF_SEMANTIC_SEARCH` | `True` | Hybrid search when the index has vectors and the model is installed; `False` forces keyword-only. |
 | `MCP_HOST` | `localhost` | Bind address. |
 | `MCP_PORT` | `5001` | Port. |
 | `MCP_TRANSPORT_PROTOCOL` | `http` | `http`/`streamable-http` (served at `/mcp`) or `sse`. |
@@ -287,7 +299,7 @@ Shared, multi-user deployment is planned work (see [Roadmap](#roadmap) and [PLAN
 okf_mcp_server/src/
 ├── api.py, main.py, mcp.py, settings.py   # template app, plus the Host/Origin guard and tool registration
 ├── tools/          # browse_knowledge, search_knowledge, get_knowledge (one file each)
-├── knowledge/      # bundle reader, FTS5 index, snapshots, cursors, OKF validation
+├── knowledge/      # bundle reader, FTS5 + vector index, embeddings, snapshots, cursors, validation
 ├── ingest/         # okf-ingest CLI, pipeline, native extractors, Docling adapter, eval
 └── oauth/, storage/                        # template OAuth (not yet used by the tools)
 samples/finance/     # synthetic pilot corpus and _okf.yaml
@@ -331,7 +343,8 @@ Tracked in detail in [PLAN.md](PLAN.md).
 - [x] Browse, search and fetch MCP tools with trust and lifecycle signals
 - [ ] Pilot on a real department corpus with ~30 real questions (phase 1)
 - [ ] Per-user authentication and permission filtering, synchronized with source systems (phase 5)
-- [ ] Hybrid search with embeddings (pgvector), if measured recall requires it
+- [x] Hybrid keyword + semantic search with a local embedding model
+- [ ] Move vectors to pgvector or sqlite-vec when the corpus outgrows in-memory search
 - [ ] Connectors (SharePoint, Google Drive, file shares), scheduled refresh, audit logs
 - [ ] Container image and OpenShift deployment verified end to end
 

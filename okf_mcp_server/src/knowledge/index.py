@@ -1,17 +1,24 @@
-"""SQLite FTS5 passage index built from an OKF snapshot.
+"""SQLite passage index built from an OKF snapshot: FTS5 keywords plus vectors.
 
 Passages are cut from concept sections (never across them), with table
 header rows repeated when a long table is split. Source locations come from
 the snapshot's extraction metadata, not from the Markdown, so rebuilding the
 index preserves citations.
+
+When an embedder is available, each passage also gets a normalized vector
+and search fuses keyword (BM25) and semantic rankings with reciprocal-rank
+fusion. Without one, search is keyword-only.
 """
 
 import json
 import re
 import sqlite3
 import unicodedata
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Protocol, Sequence, Tuple
+
+import numpy as np
 
 from okf_mcp_server.src.knowledge.bundle import (
     is_stale,
@@ -28,6 +35,20 @@ MAX_LIMIT = 20
 # Candidate passages fetched per requested result, before keeping one per section.
 CANDIDATES_PER_RESULT = 5
 TOKENIZE = "unicode61 remove_diacritics 2"
+# Reciprocal-rank fusion constant (the usual 60): damps the weight of top ranks.
+RRF_K = 60
+
+
+class Encoder(Protocol):
+    """What the index needs from an embedder (see `knowledge.embed.Embedder`)."""
+
+    model_id: str
+
+    def encode(self, texts: List[str], kind: str) -> np.ndarray:
+        """Return one normalized float32 vector per text."""
+        ...
+
+
 _TOKEN = re.compile(r"\w+", re.UNICODE)
 
 
@@ -62,6 +83,11 @@ CREATE TABLE passages (
     fts_title TEXT NOT NULL,
     fts_section TEXT NOT NULL,
     fts_text TEXT NOT NULL
+);
+CREATE TABLE vectors (
+    id INTEGER PRIMARY KEY REFERENCES passages(id),
+    text_hash TEXT NOT NULL,
+    v BLOB NOT NULL
 );
 CREATE VIRTUAL TABLE passages_fts USING fts5(
     fts_title, fts_section, fts_text,
@@ -150,10 +176,44 @@ def _load_locations(extraction_dir: Path, source_id: Optional[str]) -> Dict[str,
     return {s["slug"]: s.get("location") or {} for s in data.get("sections", [])}
 
 
+def load_vectors(db_path: Path, model_id: str) -> Dict[str, bytes]:
+    """Vectors of a previous index keyed by embedded-text hash, if the model matches.
+
+    Lets a rebuild embed only new or changed passages.
+    """
+    if not db_path.is_file():
+        return {}
+    conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key='embedding_model'"
+        ).fetchone()
+        if not row or row[0] != model_id:
+            return {}
+        return dict(conn.execute("SELECT text_hash, v FROM vectors"))
+    except sqlite3.OperationalError:
+        return {}  # index from before semantic search
+    finally:
+        conn.close()
+
+
 def build_index(
-    bundle_root: Path, extraction_dir: Path, db_path: Path, snapshot_id: str
+    bundle_root: Path,
+    extraction_dir: Path,
+    db_path: Path,
+    snapshot_id: str,
+    embedder: Optional[Encoder] = None,
+    reuse: Optional[Dict[str, bytes]] = None,
+    stats: Optional[Dict[str, int]] = None,
 ) -> int:
-    """Build a fresh index file for one snapshot. Returns the passage count."""
+    """Build a fresh index file for one snapshot. Returns the passage count.
+
+    With an `embedder`, every passage is also embedded; vectors in `reuse`
+    (from `load_vectors`) are copied instead of recomputed. `stats`, when
+    given, receives `embedded` and `vectors_reused` counts.
+    """
+    from okf_mcp_server.src.knowledge.embed import passage_text, text_hash
+
     if db_path.exists():
         db_path.unlink()
     conn = sqlite3.connect(db_path)
@@ -200,6 +260,35 @@ def build_index(
                     )
                     count += 1
         conn.execute("INSERT INTO passages_fts(passages_fts) VALUES ('rebuild')")
+        if embedder is not None:
+            reuse = reuse or {}
+            rows = conn.execute(
+                "SELECT id, title, section_title, text FROM passages ORDER BY id"
+            ).fetchall()
+            texts = [passage_text(t, st, x) for _, t, st, x in rows]
+            hashes = [text_hash(t) for t in texts]
+            todo = [i for i, h in enumerate(hashes) if h not in reuse]
+            fresh = (
+                embedder.encode([texts[i] for i in todo], "passage") if todo else None
+            )
+            new = (
+                {
+                    hashes[i]: fresh[n].astype(np.float32).tobytes()
+                    for n, i in enumerate(todo)
+                }
+                if fresh is not None
+                else {}
+            )
+            conn.executemany(
+                "INSERT INTO vectors VALUES (?,?,?)",
+                [(rows[i][0], h, new.get(h) or reuse[h]) for i, h in enumerate(hashes)],
+            )
+            conn.execute(
+                "INSERT INTO meta VALUES ('embedding_model', ?)", (embedder.model_id,)
+            )
+            if stats is not None:
+                stats["embedded"] = len(todo)
+                stats["vectors_reused"] = len(rows) - len(todo)
         conn.commit()
         return count
     finally:
@@ -240,17 +329,44 @@ def format_location(location: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+@lru_cache(maxsize=4)
+def _vector_matrix(db_uri: str, snapshot_id: str) -> Tuple[np.ndarray, np.ndarray]:
+    """(passage ids, vectors) for one immutable snapshot index, cached per process."""
+    conn = sqlite3.connect(db_uri, uri=True)
+    try:
+        rows = conn.execute("SELECT id, v FROM vectors ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    ids = np.array([r[0] for r in rows], dtype=np.int64)
+    matrix = (
+        np.frombuffer(b"".join(r[1] for r in rows), dtype=np.float32).reshape(
+            len(rows), -1
+        )
+        if rows
+        else np.zeros((0, 0), dtype=np.float32)
+    )
+    return ids, matrix
+
+
 class SearchIndex:
     """Read-only access to one snapshot's index file."""
 
-    def __init__(self, db_path: Path):
-        """Open the index read-only; snapshots are immutable once published."""
+    def __init__(self, db_path: Path, embedder: Optional[Encoder] = None):
+        """Open the index read-only; snapshots are immutable once published.
+
+        With an `embedder` whose model matches the one the index was built
+        with, search is hybrid; otherwise it is keyword-only.
+        """
         if not db_path.is_file():
             raise SearchIndexError(f"search index not found: {db_path.name}")
-        self.conn = sqlite3.connect(
-            f"{db_path.resolve().as_uri()}?mode=ro&immutable=1", uri=True
-        )
+        self._uri = f"{db_path.resolve().as_uri()}?mode=ro&immutable=1"
+        self.conn = sqlite3.connect(self._uri, uri=True)
         self.conn.row_factory = sqlite3.Row
+        self.embedder = (
+            embedder
+            if embedder and self.embedding_model() == embedder.model_id
+            else None
+        )
 
     def close(self) -> None:
         """Close the connection."""
@@ -264,12 +380,72 @@ class SearchIndex:
         """Context-manager exit."""
         self.close()
 
+    def _meta(self, key: str) -> str:
+        row = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row else ""
+
     def snapshot_id(self) -> str:
         """Snapshot ID recorded when the index was built."""
-        row = self.conn.execute(
-            "SELECT value FROM meta WHERE key='snapshot_id'"
-        ).fetchone()
-        return row[0] if row else ""
+        return self._meta("snapshot_id")
+
+    def embedding_model(self) -> str:
+        """Embedding model the vectors were built with; empty if keyword-only."""
+        return self._meta("embedding_model")
+
+    @property
+    def mode(self) -> str:
+        """`hybrid` when semantic search is active, else `keyword`."""
+        return "hybrid" if self.embedder else "keyword"
+
+    def _filter_sql(
+        self, type_: Optional[str], tags: Sequence[str]
+    ) -> Tuple[str, List[Any]]:
+        sql, params = "", []
+        if type_:
+            sql += " AND p.type = ?"
+            params.append(type_)
+        for tag in tags:
+            sql += " AND EXISTS (SELECT 1 FROM json_each(p.tags) WHERE value = ?)"
+            params.append(tag)
+        return sql, params
+
+    def _keyword_ids(
+        self, query: str, where: str, params: List[Any], pool: int
+    ) -> List[int]:
+        match = fts_query(search_form(query))
+        if not match:
+            return []
+        # `where` holds only fixed fragments with ? placeholders (see _filter_sql);
+        # every user value is a bound parameter.
+        sql = (
+            "SELECT p.id FROM passages_fts JOIN passages p ON p.id = passages_fts.rowid"  # nosec B608
+            f" WHERE passages_fts MATCH ?{where}"
+            " ORDER BY bm25(passages_fts, 5.0, 2.0, 1.0) LIMIT ?"
+        )
+        return [r[0] for r in self.conn.execute(sql, [match, *params, pool])]
+
+    def _semantic_ids(
+        self, query: str, where: str, params: List[Any], pool: int
+    ) -> List[int]:
+        if self.embedder is None or not query.strip():
+            return []
+        ids, matrix = _vector_matrix(self._uri, self.snapshot_id())
+        if not len(ids):
+            return []
+        scores = matrix @ self.embedder.encode([query], "query")[0]
+        # Over-fetch so filtering by type/tags still leaves `pool` candidates.
+        top = ids[np.argsort(-scores)[: pool * 4]].tolist()
+        if where:
+            marks = ",".join("?" * len(top))  # placeholders only
+            allowed = {
+                r[0]
+                for r in self.conn.execute(
+                    f"SELECT p.id FROM passages p WHERE p.id IN ({marks}){where}",  # nosec B608
+                    [*top, *params],
+                )
+            }
+            top = [i for i in top if i in allowed]
+        return top[:pool]
 
     def search(
         self,
@@ -280,33 +456,43 @@ class SearchIndex:
     ) -> List[Dict[str, Any]]:
         """Return up to `limit` ranked sections with trust and lifecycle signals.
 
-        Each section appears once, represented by its best-scoring passage, so
-        a long section split into several passages cannot fill every slot.
+        Keyword and (when available) semantic rankings are fused with
+        reciprocal-rank fusion. Each section appears once, represented by its
+        best passage, and deprecated concepts rank after current ones.
+        Each result says whether it `matched_by` keyword, semantic or both.
         """
-        match = fts_query(search_form(query))
-        if not match:
-            return []
-        sql = [
-            "SELECT p.*, bm25(passages_fts, 5.0, 2.0, 1.0) AS score",
-            "FROM passages_fts JOIN passages p ON p.id = passages_fts.rowid",
-            "WHERE passages_fts MATCH ?",
-        ]
-        params: List[Any] = [match]
-        if type_:
-            sql.append("AND p.type = ?")
-            params.append(type_)
-        for tag in tags:
-            sql.append("AND EXISTS (SELECT 1 FROM json_each(p.tags) WHERE value = ?)")
-            params.append(tag)
-        # Deprecated concepts stay retrievable (flagged) but rank after current ones.
-        sql.append("ORDER BY p.status = 'deprecated', score LIMIT ?")
         limit = max(1, min(int(limit), MAX_LIMIT))
         # ponytail: fixed candidate pool; a section with more passages than the
         # pool could still crowd out others. Use a window query if that shows up.
-        params.append(limit * CANDIDATES_PER_RESULT)
+        pool = limit * CANDIDATES_PER_RESULT
+        where, params = self._filter_sql(type_, tags)
+        rankings = {
+            "keyword": self._keyword_ids(query, where, params, pool),
+            "semantic": self._semantic_ids(query, where, params, pool),
+        }
+        fused: Dict[int, float] = {}
+        matched: Dict[int, List[str]] = {}
+        for name, ranked in rankings.items():
+            for rank, pid in enumerate(ranked):
+                fused[pid] = fused.get(pid, 0.0) + 1.0 / (RRF_K + rank)
+                matched.setdefault(pid, []).append(name)
+        if not fused:
+            return []
+        marks = ",".join("?" * len(fused))
+        rows = {
+            r["id"]: r
+            for r in self.conn.execute(
+                f"SELECT * FROM passages WHERE id IN ({marks})",  # nosec B608 - "?" only
+                list(fused),
+            )
+        }
+        ordered = sorted(
+            fused, key=lambda pid: (rows[pid]["status"] == "deprecated", -fused[pid])
+        )
         results: List[Dict[str, Any]] = []
         seen = set()
-        for row in self.conn.execute(" ".join(sql), params):
+        for pid in ordered:
+            row = rows[pid]
             key = (row["concept_id"], row["section"])
             if key in seen:
                 continue
@@ -331,6 +517,7 @@ class SearchIndex:
                     "status": row["status"],
                     "trust_tier": trust_tier(fm),
                     "stale": is_stale(fm),
+                    "matched_by": "both" if len(matched[pid]) == 2 else matched[pid][0],
                     "source": {
                         "id": row["source_id"],
                         "uri": row["source_uri"],

@@ -39,7 +39,8 @@ from okf_mcp_server.src.knowledge.bundle import (
     split_frontmatter,
     split_sections,
 )
-from okf_mcp_server.src.knowledge.index import build_index
+from okf_mcp_server.src.knowledge.embed import LazyEmbedder, unavailable_reason
+from okf_mcp_server.src.knowledge.index import build_index, load_vectors
 from okf_mcp_server.src.knowledge.snapshot import (
     Snapshot,
     SnapshotError,
@@ -47,6 +48,9 @@ from okf_mcp_server.src.knowledge.snapshot import (
     publish,
 )
 from okf_mcp_server.src.knowledge.validate import validate_bundle
+
+# Builds embed through the lazy wrapper: no model load when every vector is reused.
+get_embedder = LazyEmbedder
 
 CONFIG_FILE = "_okf.yaml"
 STATUSES = ("draft", "stable", "deprecated")
@@ -70,6 +74,9 @@ class BuildReport:
     problems: List[str] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     pruned: List[str] = field(default_factory=list)
+    embedded: int = 0
+    vectors_reused: int = 0
+    embedding_model: str = ""
     skipped: Dict[str, str] = field(default_factory=dict)
     changes: List[Tuple[str, str]] = field(default_factory=list)
 
@@ -359,6 +366,7 @@ def build(
     allow_failures: bool = False,
     now: Optional[datetime] = None,
     keep: int = 3,
+    embeddings: bool = True,
 ) -> BuildReport:
     """Ingest `source_root` into a new snapshot and publish it if it validates.
 
@@ -383,7 +391,9 @@ def build(
         # Holding the lock, any staging folder belongs to an interrupted build.
         for stale in (data_dir / "snapshots").glob(".building-*"):
             shutil.rmtree(stale, ignore_errors=True)
-        report = _build(source_root, data_dir, artifacts_path, allow_failures, now)
+        report = _build(
+            source_root, data_dir, artifacts_path, allow_failures, now, embeddings
+        )
         if report.published:
             report.pruned = prune_snapshots(data_dir, keep)
         return report
@@ -414,6 +424,7 @@ def _build(
     artifacts_path: Optional[Path],
     allow_failures: bool,
     now: Optional[datetime],
+    embeddings: bool = True,
 ) -> BuildReport:
     now = now or datetime.now(timezone.utc)
     config = load_config(source_root)
@@ -615,7 +626,21 @@ def _build(
         shutil.rmtree(work)
         return report
 
-    report.passages = build_index(snap.bundle, snap.extraction, snap.index, snapshot_id)
+    embedder = None
+    if embeddings:
+        reason = unavailable_reason()
+        if reason:
+            report.warnings.append(f"semantic index skipped: {reason}")
+        else:
+            embedder = get_embedder()
+    stats: Dict[str, int] = {}
+    reuse = load_vectors(prev.index, embedder.model_id) if embedder and prev else {}
+    report.passages = build_index(
+        snap.bundle, snap.extraction, snap.index, snapshot_id, embedder, reuse, stats
+    )
+    report.embedded = stats.get("embedded", 0)
+    report.vectors_reused = stats.get("vectors_reused", 0)
+    report.embedding_model = embedder.model_id if embedder else ""
     final = data_dir / "snapshots" / snapshot_id
     work.rename(final)
     publish(data_dir, Snapshot(id=snapshot_id, root=final))

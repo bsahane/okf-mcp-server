@@ -9,12 +9,14 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Callable, Optional
 from urllib.parse import urlparse
 
+import anyio
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 
+from okf_mcp_server.src.knowledge.service import warm_up_search
 from okf_mcp_server.src.mcp import OKFMCPServer
 from okf_mcp_server.src.oauth.handler import OAuth2Handler
 from okf_mcp_server.src.oauth.routes import register_oauth_routes
@@ -58,6 +60,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.critical(f"Failed to initialize storage service: {e}")
         raise
+
+    # FastMCP runs synchronous tools on the event loop, so the multi-second
+    # embedding-model load must not happen inside the first search request:
+    # it would stall every connection. Load it here, in a worker thread.
+    await anyio.to_thread.run_sync(warm_up_search)
 
     # Run MCP lifespan
     async with mcp_app.lifespan(app):

@@ -31,7 +31,10 @@ def evaluate(data_dir: Path, questions_file: Path, k: int = 5) -> Dict[str, Any]
     spec = yaml.safe_load(questions_file.read_text(encoding="utf-8")) or {}
     snapshot = current_snapshot(data_dir)
     rows = []
-    with SearchIndex(snapshot.index) as index:
+    from okf_mcp_server.src.knowledge.service import search_embedder
+
+    with SearchIndex(snapshot.index, embedder=search_embedder()) as index:
+        mode = index.mode
         for q in spec.get("questions") or []:
             expected = [
                 str(e).strip("/").removesuffix(".md") for e in q.get("expected") or []
@@ -77,6 +80,7 @@ def evaluate(data_dir: Path, questions_file: Path, k: int = 5) -> Dict[str, Any]
     return {
         "snapshot_id": snapshot.id,
         "k": k,
+        "search_mode": mode,
         "answerable": len(answerable),
         "unanswerable": len(rows) - len(answerable),
         f"hit_at_{k}": hits / len(answerable) if answerable else None,

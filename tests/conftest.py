@@ -223,3 +223,62 @@ def published(tmp_path, corpus, monkeypatch):
     monkeypatch.setattr(app_settings, "OKF_DATA_DIR", str(data_dir))
     monkeypatch.setattr(app_settings, "ENABLE_AUTH", False)
     return data_dir
+
+
+@pytest.fixture(autouse=True)
+def keyword_only_by_default(monkeypatch):
+    """Keep tests hermetic: never load the real embedding model.
+
+    Semantic tests opt in with the `fake_embedder` fixture.
+    """
+    from okf_mcp_server.src.ingest import pipeline
+
+    monkeypatch.setattr(pipeline, "unavailable_reason", lambda: "disabled in tests")
+    from okf_mcp_server.src.knowledge import service
+
+    monkeypatch.setattr(service.settings, "OKF_SEMANTIC_SEARCH", False)
+
+
+class FakeEmbedder:
+    """Deterministic stand-in for the E5 model: words in one synonym group share a vector."""
+
+    model_id = "fake-embedder@1"
+    GROUPS = [
+        {"physician", "doctor", "fit", "note", "certificate", "sick", "medical"},
+        {"lodging", "hotel", "accommodation", "night"},
+        {"wine", "gift", "present", "hospitality"},
+    ]
+
+    def __init__(self):
+        self.calls = 0
+
+    def encode(self, texts, kind):
+        import re
+
+        import numpy as np
+
+        self.calls += len(texts)
+        rows = []
+        for text in texts:
+            v = np.zeros(8, dtype=np.float32)
+            for word in re.findall(r"[a-z]+", text.lower()):
+                for i, group in enumerate(self.GROUPS):
+                    if word in group:
+                        v[i] += 1
+            v[7] += 0.01  # never a zero vector
+            rows.append(v / np.linalg.norm(v))
+        return np.vstack(rows) if rows else np.zeros((0, 8), dtype=np.float32)
+
+
+@pytest.fixture
+def fake_embedder(monkeypatch):
+    """Enable hybrid search in builds and tools with the fake embedder."""
+    from okf_mcp_server.src.ingest import pipeline
+    from okf_mcp_server.src.knowledge import service
+
+    embedder = FakeEmbedder()
+    monkeypatch.setattr(pipeline, "unavailable_reason", lambda: None)
+    monkeypatch.setattr(pipeline, "get_embedder", lambda: embedder)
+    monkeypatch.setattr(service, "_load_embedder", lambda: embedder)
+    monkeypatch.setattr(service.settings, "OKF_SEMANTIC_SEARCH", True)
+    return embedder
