@@ -25,10 +25,37 @@ from docling_core.types.doc import (
 
 from okf_mcp_server.src.ingest.extract import ExtractedDoc, ExtractedSection
 
+MIN_TEXT_CHARS = 20
+
+
+def needs_ocr(path: Path) -> bool:
+    """True unless every page of a PDF already has an embedded text layer.
+
+    OCR dominated conversion time on born-digital PDFs in the phase 1 pilot
+    (3.5 s/page with OCR, 0.8 s/page without, identical text), so it runs
+    only when some page is effectively image-only. Non-PDFs never need it.
+    """
+    if path.suffix.lower() != ".pdf":
+        return False
+    import pypdfium2  # Docling dependency
+
+    try:
+        pdf = pypdfium2.PdfDocument(str(path))
+    except (pypdfium2.PdfiumError, OSError):
+        return True  # let Docling report the problem with OCR available
+    try:
+        for i in range(len(pdf)):
+            text = pdf[i].get_textpage().get_text_range()
+            if len(text.strip()) < MIN_TEXT_CHARS:
+                return True
+        return False
+    finally:
+        pdf.close()
+
 
 @lru_cache(maxsize=4)
-def _converter(artifacts_path: Optional[str]) -> DocumentConverter:
-    options = PdfPipelineOptions(do_ocr=True, do_table_structure=True)
+def _converter(artifacts_path: Optional[str], ocr: bool = True) -> DocumentConverter:
+    options = PdfPipelineOptions(do_ocr=ocr, do_table_structure=True)
     if artifacts_path:
         options.artifacts_path = artifacts_path
     return DocumentConverter(
@@ -40,7 +67,10 @@ def extract_with_docling(
     path: Path, artifacts_path: Optional[Path] = None
 ) -> ExtractedDoc:
     """Convert one file with Docling into ordered, located sections."""
-    result = _converter(str(artifacts_path) if artifacts_path else None).convert(path)
+    converter = _converter(
+        str(artifacts_path) if artifacts_path else None, needs_ocr(path)
+    )
+    result = converter.convert(path)
     if result.status != ConversionStatus.SUCCESS:
         raise ValueError(f"Docling conversion did not complete: {result.status.value}")
     doc = result.document

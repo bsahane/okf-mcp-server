@@ -78,7 +78,50 @@ def test_incomplete_conversion_is_rejected(tmp_path, monkeypatch, status):
     monkeypatch.setattr(
         docling_adapter,
         "_converter",
-        lambda _: SimpleNamespace(convert=lambda path: result),
+        lambda *_: SimpleNamespace(convert=lambda path: result),
     )
     with pytest.raises(ValueError, match="conversion did not complete"):
         extract_with_docling(tmp_path / "broken.pdf")
+
+
+def _text_pdf(path, text):
+    """One-page PDF with a real text layer (Helvetica)."""
+    stream = f"BT /F1 12 Tf 72 720 Td ({text}) Tj ET"
+    objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+        "/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        f"<< /Length {len(stream)} >>\nstream\n{stream}\nendstream",
+    ]
+    data, offsets = b"%PDF-1.4\n", []
+    for i, obj in enumerate(objs, 1):
+        offsets.append(len(data))
+        data += f"{i} 0 obj\n{obj}\nendobj\n".encode()
+    xref = len(data)
+    data += f"xref\n0 {len(objs) + 1}\n0000000000 65535 f \n".encode()
+    data += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
+    data += f"trailer\n<< /Size {len(objs) + 1} /Root 1 0 R >>\n".encode()
+    data += f"startxref\n{xref}\n%%EOF\n".encode()
+    path.write_bytes(data)
+
+
+def test_ocr_only_when_a_page_has_no_text_layer(tmp_path):
+    from PIL import Image, ImageDraw
+
+    from okf_mcp_server.src.ingest.docling_adapter import needs_ocr
+
+    scan = tmp_path / "scan.pdf"
+    img = Image.new("L", (600, 800), 255)
+    ImageDraw.Draw(img).text((50, 50), "Scanned text", fill=0)
+    img.save(scan, "PDF")
+    assert needs_ocr(scan) is True
+
+    text_pdf = tmp_path / "text.pdf"
+    _text_pdf(text_pdf, "This page has an embedded text layer for extraction.")
+    assert needs_ocr(text_pdf) is False
+
+    assert needs_ocr(tmp_path / "notes.docx") is False
+    (tmp_path / "broken.pdf").write_bytes(b"%PDF-1.4 garbage")
+    assert needs_ocr(tmp_path / "broken.pdf") is True

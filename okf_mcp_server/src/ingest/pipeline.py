@@ -9,15 +9,18 @@ its index and only then switches `current`. Unchanged sources (same content
 hash) reuse the previous snapshot's extraction instead of re-running Docling.
 """
 
+import fcntl
 import hashlib
 import json
+import re
 import secrets
 import shutil
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import yaml
 
@@ -327,6 +330,26 @@ def _write_log(
     )
 
 
+class BuildLockedError(ValueError):
+    """Raised when another build holds the data directory."""
+
+
+@contextmanager
+def _build_lock(data_dir: Path) -> Iterator[None]:
+    """Exclusive, non-blocking lock so builds cannot run concurrently.
+
+    The OS releases it when the process exits, even if it is killed.
+    """
+    with open(data_dir / ".build.lock", "w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as e:
+            raise BuildLockedError(
+                f"another okf-ingest build is running on {data_dir}; wait for it to finish"
+            ) from e
+        yield
+
+
 def build(
     source_root: Path,
     data_dir: Path,
@@ -334,19 +357,38 @@ def build(
     allow_failures: bool = False,
     now: Optional[datetime] = None,
 ) -> BuildReport:
-    """Ingest `source_root` into a new snapshot and publish it if it validates."""
-    now = now or datetime.now(timezone.utc)
+    """Ingest `source_root` into a new snapshot and publish it if it validates.
+
+    Raises:
+        ValueError: For a missing source, a data directory inside the source,
+            an invalid `_okf.yaml`, or another build already running.
+    """
     source_root = source_root.resolve()
     if not source_root.is_dir():
         raise ValueError(f"source directory not found: {source_root}")
     data_dir = data_dir.resolve()
     if data_dir.is_relative_to(source_root):
         raise ValueError("snapshot data directory must be outside the source directory")
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / "snapshots").mkdir(exist_ok=True)
+    with _build_lock(data_dir):
+        # Holding the lock, any staging folder belongs to an interrupted build.
+        for stale in (data_dir / "snapshots").glob(".building-*"):
+            shutil.rmtree(stale, ignore_errors=True)
+        return _build(source_root, data_dir, artifacts_path, allow_failures, now)
+
+
+def _build(
+    source_root: Path,
+    data_dir: Path,
+    artifacts_path: Optional[Path],
+    allow_failures: bool,
+    now: Optional[datetime],
+) -> BuildReport:
+    now = now or datetime.now(timezone.utc)
     config = load_config(source_root)
     docs_config = config.get("documents") or {}
 
-    data_dir.mkdir(parents=True, exist_ok=True)
-    (data_dir / "snapshots").mkdir(exist_ok=True)
     prev: Optional[Snapshot] = None
     prev_manifest: Dict[str, Dict[str, Any]] = {}
     try:
@@ -448,7 +490,7 @@ def build(
             generated_at = prior["generated_at"]
         fm: Dict[str, Any] = {
             "type": type_for(rel, config),
-            "title": str(cfg.get("title") or doc.title or _title_from_filename(rel)),
+            "title": str(cfg.get("title") or doc.title or _fallback_title(rel, doc)),
         }
         if cfg.get("description"):
             fm["description"] = str(cfg["description"])
@@ -543,6 +585,26 @@ def build(
     publish(data_dir, Snapshot(id=snapshot_id, root=final))
     report.published = True
     return report
+
+
+# UUIDs, long hex strings and bare numbers: names from exports and DMS systems.
+_MACHINE_NAME = re.compile(
+    r"^(?:[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}|[0-9a-f]{16,}|[\d_\- ]+)$",
+    re.IGNORECASE,
+)
+
+
+def _fallback_title(rel: str, doc: ExtractedDoc) -> str:
+    """Title when neither config nor extractor gives one.
+
+    A readable file name wins. A machine-generated one (UUID, hex, digits)
+    falls back to the first heading, which is usually the document title.
+    """
+    if _MACHINE_NAME.match(Path(rel).stem.strip()):
+        first = next((s.title for s in doc.sections if s.title.strip()), "")
+        if first:
+            return " ".join(first.split())[:200]
+    return _title_from_filename(rel)
 
 
 def _title_from_filename(rel: str) -> str:

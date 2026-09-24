@@ -53,9 +53,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "build":
         from okf_mcp_server.src.ingest.pipeline import build
 
-        report = build(
-            args.source, args.data_dir, args.artifacts_path, args.allow_failures
-        )
+        try:
+            report = build(
+                args.source, args.data_dir, args.artifacts_path, args.allow_failures
+            )
+        except ValueError as e:
+            print(f"ERROR   {e}", file=sys.stderr)
+            return 2
         for rel, error in sorted(report.failures.items()):
             print(f"FAILED  {rel}: {error}", file=sys.stderr)
         for rel, reason in sorted(report.skipped.items()):

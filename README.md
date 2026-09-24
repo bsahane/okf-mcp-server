@@ -120,9 +120,10 @@ Supported formats: `.pdf .docx .pptx .xlsx .html .htm .csv` (via Docling) and `.
 
 ### What a build does
 
-- **Mirrors your folders.** `policies/Travel Policy.pdf` becomes concept `policies/travel-policy`. Same-name files get their extension appended (`budget-pdf`, `budget-xlsx`), and the reserved names `index`/`log` get a `-doc` suffix.
+- **Mirrors your folders.** `policies/Travel Policy.pdf` becomes concept `policies/travel-policy`. Machine-generated file names (UUIDs, long hex, bare numbers) take their title from the document's first heading instead. Same-name files get their extension appended (`budget-pdf`, `budget-xlsx`), and the reserved names `index`/`log` get a `-doc` suffix.
 - **Reuses work.** Files whose SHA-256 is unchanged reuse the previous extraction, so Docling does not run again. Renamed files are detected by content. Deleted files are gone from the new snapshot, and `log.md` records every creation, update, rename and deletion.
 - **Keeps citations durable.** Locations are stored in `extraction/<source-id>.json` next to the bundle (including Docling's own JSON), so rebuilding the index never guesses locations from Markdown.
+- **One build at a time.** A second build on the same data directory exits with an error instead of racing the first; leftovers from an interrupted build are cleaned up by the next one.
 - **Publishes safely.** If any file fails to extract, or the bundle fails validation, nothing is published. `--allow-failures` publishes the rest and writes `failures.json`.
 - **Stays inside the source folder.** Keep `OKF_DATA_DIR` outside the source folder; a data directory inside it is rejected so builds cannot ingest their own snapshots. Symlinked files that resolve outside the source folder, and partial Docling conversions, are reported as failures.
 
@@ -192,6 +193,10 @@ questions:
 ```
 
 `okf-ingest eval` reports Hit@5, notes which multi-source questions were missing evidence, and flags deprecated or stale results. See [samples/finance-questions.yaml](samples/finance-questions.yaml).
+
+### Scanned PDFs and speed
+
+OCR runs only for PDFs where some page has no embedded text layer, which is a real scan. On born-digital PDFs it added no text in the pilot but made conversion 4.5× slower (3.5 s vs 0.8 s per page). The trade-off: text inside figures and diagrams of born-digital PDFs is not OCR'd. Unchanged files are never converted twice: a rebuild of four PDFs (171 pages) took 0.4 s instead of 12 minutes.
 
 ### Offline and air-gapped use
 

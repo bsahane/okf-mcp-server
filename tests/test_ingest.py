@@ -202,6 +202,46 @@ class TestBuild:
             == 0
         )
 
+    @pytest.mark.parametrize(
+        "name, expected",
+        [
+            ("22ad99b9-f304-4673-bd81-e79f27ad48b5.md", "Quarterly Report"),
+            ("0123456789abcdef0123.md", "Quarterly Report"),
+            ("20240917_001.md", "Quarterly Report"),
+            ("remote-work.md", "Remote work"),
+        ],
+    )
+    def test_machine_file_names_use_first_heading(
+        self, tmp_path, corpus_writer, name, expected
+    ):
+        src = corpus_writer(
+            tmp_path / "s", {name: "## Quarterly Report\n\nRevenue grew.\n"}
+        )
+        data = tmp_path / "data"
+        assert build(src, data).published
+        titles = [
+            split_frontmatter(p.read_text())[0]["title"]
+            for p in current_snapshot(data).bundle.glob("*.md")
+            if p.name not in ("index.md", "log.md")
+        ]
+        assert titles == [expected]
+
+    def test_concurrent_build_is_refused_and_stale_staging_removed(
+        self, corpus, tmp_path, capsys
+    ):
+        data = tmp_path / "data"
+        assert build(corpus, data).published
+        stale = data / "snapshots" / ".building-20200101T000000Z-dead00"
+        stale.mkdir()
+        with pipeline._build_lock(data.resolve()):
+            with pytest.raises(pipeline.BuildLockedError, match="another okf-ingest"):
+                build(corpus, data)
+            assert cli_main(["--data-dir", str(data), "build", str(corpus)]) == 2
+            assert "ERROR   another okf-ingest build" in capsys.readouterr().err
+            assert stale.exists()
+        assert build(corpus, data).published
+        assert not stale.exists()
+
     def test_invalid_config_timestamp_blocks_publish(self, corpus, tmp_path):
         cfg = corpus / "_okf.yaml"
         cfg.write_text(cfg.read_text().replace("2099-01-01T00:00:00Z", "next spring"))
