@@ -1,0 +1,103 @@
+"""Extraction result types and the built-in Markdown/text extractors.
+
+Every extractor returns an `ExtractedDoc`: ordered sections, each with its
+source location. Locations are only what the extractor actually knows; page
+numbers are never invented.
+"""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from okf_mcp_server.src.knowledge.bundle import FENCE, HEADING, split_sections
+
+NATIVE_SUFFIXES = {".md", ".markdown", ".txt"}
+DOCLING_SUFFIXES = {".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".csv"}
+SUPPORTED_SUFFIXES = NATIVE_SUFFIXES | DOCLING_SUFFIXES
+
+
+@dataclass
+class ExtractedSection:
+    """A heading-delimited run of extracted content."""
+
+    title: str
+    level: int
+    markdown: str
+    location: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ExtractedDoc:
+    """Extractor output for one source file."""
+
+    extractor: str
+    sections: List[ExtractedSection]
+    title: Optional[str] = None
+    raw: Optional[Dict[str, Any]] = None
+
+
+def extract_native(path: Path) -> ExtractedDoc:
+    """Extract Markdown or plain text without third-party dependencies."""
+    text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+    skipped = 0
+    if text.startswith("---\n"):
+        # Drop any existing frontmatter; the ingest config owns metadata.
+        end = text.find("\n---", 4)
+        if end != -1:
+            rest = text[end + 4 :]
+            body = rest.lstrip("\n")
+            skipped = text[: end + 4].count("\n") + 1 + (len(rest) - len(body) - 1)
+            text = body
+    if path.suffix.lower() == ".txt":
+        line_count = text.count("\n") + 1
+        return ExtractedDoc(
+            extractor="native-text",
+            sections=[
+                ExtractedSection(
+                    "", 0, text.strip(), {"lines": [1 + skipped, line_count + skipped]}
+                )
+            ],
+        )
+
+    lines = text.split("\n")
+    headings: List[int] = []
+    in_fence = False
+    for number, line in enumerate(lines, 1):
+        if FENCE.match(line):
+            in_fence = not in_fence
+        elif not in_fence and HEADING.match(line):
+            headings.append(number)
+    bounds = headings + [len(lines) + 1]
+
+    sections: List[ExtractedSection] = []
+    title = None
+    parsed = split_sections(text)
+    offset = 0 if parsed and parsed[0].title else -1  # -1: a preamble comes first
+    for i, sec in enumerate(parsed):
+        k = i + offset
+        start = (1 if k < 0 else bounds[k]) + skipped
+        end = bounds[k + 1] - 1 + skipped
+        if sec.level == 1 and title is None:
+            title = sec.title
+        location: Dict[str, Any] = {"lines": [start, end]}
+        if sec.title:
+            location["section"] = sec.title
+        sections.append(ExtractedSection(sec.title, sec.level, sec.text, location))
+    return ExtractedDoc(extractor="native-markdown", sections=sections, title=title)
+
+
+def extract(path: Path, artifacts_path: Optional[Path] = None) -> ExtractedDoc:
+    """Dispatch to the right extractor for a file suffix.
+
+    Raises:
+        ValueError: For unsupported file types.
+    """
+    suffix = path.suffix.lower()
+    if suffix in NATIVE_SUFFIXES:
+        return extract_native(path)
+    if suffix in DOCLING_SUFFIXES:
+        # Imported lazily: Docling is the optional `ingest` extra.
+        from okf_mcp_server.src.ingest.docling_adapter import extract_with_docling
+
+        return extract_with_docling(path, artifacts_path)
+    raise ValueError(f"unsupported file type: {suffix or '(none)'}")

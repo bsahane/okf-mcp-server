@@ -1,0 +1,57 @@
+services:
+  okf-mcp-server:
+    build:
+      context: .
+      dockerfile: Containerfile
+    container_name: okf-mcp-server
+    ports:
+      # Loopback only: the pilot runs without authentication.
+      - "127.0.0.1:5001:5001"
+    env_file:
+      - .env
+    environment:
+      - MCP_HOST=0.0.0.0
+      - MCP_PORT=5001
+      - OKF_DATA_DIR=/app/data
+    volumes:
+      # Snapshots built on the host with `okf-ingest build`, served read-only.
+      - ./data:/app/data:ro
+    restart: always
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - okf-network
+
+  # Only needed for OAuth token storage (phase 5): `podman compose --profile auth up`.
+  postgres:
+    profiles: ["auth"]
+    image: postgres:15-alpine
+    container_name: okf-mcp-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - okf-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  okf-network:
+    driver: bridge

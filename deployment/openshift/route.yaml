@@ -1,0 +1,16 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: okf-mcp-server
+  labels:
+    app: okf-mcp-server
+    component: mcp-server
+spec:
+  to:
+    kind: Service
+    name: okf-mcp-server
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

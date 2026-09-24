@@ -1,0 +1,30 @@
+# Ingestion config for the synthetic pilot corpus.
+bundle_title: Acme Finance knowledge (synthetic pilot)
+default_type: Reference
+types:                      # longest matching path prefix wins
+  policies/: Policy
+  sops/: SOP
+  specs/: Specification
+documents:
+  policies/travel-policy.md:
+    status: stable
+    description: Current rules for booking and reimbursing business travel.
+    tags: [finance, travel]
+    stale_after: 2027-03-31T00:00:00Z
+    verified:
+      - { by: "human:finance-owner", at: 2026-09-01T09:00:00Z }
+  policies/travel-policy-2023.md:
+    status: deprecated
+    description: Superseded 2023 travel policy, kept for history.
+    tags: [finance, travel]
+  sops/expense-claims.md:
+    status: stable
+    description: How employees submit and approve expense claims.
+    tags: [finance, expenses]
+    stale_after: 2026-06-30T00:00:00Z
+  specs/warranty-terms.docx:
+    description: Warranty terms by product SKU.
+    tags: [product, warranty]
+  reference/cost-centres.xlsx:
+    description: Cost-centre codes and budget owners.
+    tags: [finance, budget]

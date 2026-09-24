@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: okf-mcp-server-knowledge
+  labels:
+    app: okf-mcp-server
+    component: mcp-server
+spec:
+  # The ingestion job writes snapshots; the server mounts this read-only.
+  # Use ReadWriteMany if ingestion runs in a separate pod concurrently.
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
