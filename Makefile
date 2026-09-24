@@ -82,8 +82,8 @@ pre-commit: ## Run all pre-commit hooks
 local: ## Start MCP server locally
 	@echo "Setting up local environment..."
 	@test -f .env || (echo "Creating .env from .env.example..." && cp .env.example .env)
-	@echo "Starting MCP server locally on port 5001..."
-	@echo "Health check available at: http://localhost:5001/health"
+	@echo "Starting MCP server locally on port $${MCP_PORT:-5001}..."
+	@echo "Health check available at: http://localhost:$${MCP_PORT:-5001}/health"
 	@echo "Press Ctrl+C to stop the server"
 	@. .venv/bin/activate && python -m okf_mcp_server.src.main
 
