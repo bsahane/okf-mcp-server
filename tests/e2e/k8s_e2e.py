@@ -186,7 +186,28 @@ def infra(
     ]
 
 
-def product(image: str, client_secret: str, pg_password: str, sources: dict) -> list:
+def docx_bytes() -> bytes:
+    """A small Word document for the ingest image to convert with Docling."""
+    import io
+
+    from docx import Document
+
+    doc = Document()
+    doc.add_heading("Finance Hotel Guide", 0)
+    doc.add_heading("London", 1)
+    doc.add_paragraph("In London the hotel limit is 260 GBP per night.")
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
+def product(
+    image: str,
+    client_secret: str,
+    pg_password: str,
+    sources: dict,
+    ingest_image: str = "",
+) -> list:
     """The deployment/kubernetes overlay, filled in for this cluster."""
     rendered = subprocess.run(
         ["kubectl", "kustomize", str(ROOT / "deployment" / "kubernetes")],
@@ -231,31 +252,45 @@ def product(image: str, client_secret: str, pg_password: str, sources: dict) -> 
             )
             spec["securityContext"].update({"runAsUser": UID, "runAsGroup": 0})
             for c in spec["containers"]:
-                c["image"] = f"{name}:{tag}"
+                c["image"] = (
+                    ingest_image
+                    if (kind == "CronJob" and ingest_image)
+                    else f"{name}:{tag}"
+                )
             if kind == "CronJob":
                 for v in spec["volumes"]:
                     if v["name"] == "sources":
+                        items = [{"key": k, "path": p} for k, (p, _) in sources.items()]
+                        if ingest_image:
+                            items.append(
+                                {
+                                    "key": "finance-hotel-guide.docx",
+                                    "path": "finance/hotel-guide.docx",
+                                }
+                            )
                         v.clear()
                         v.update(
                             {
                                 "name": "sources",
                                 "configMap": {
                                     "name": "okf-e2e-sources",
-                                    "items": [
-                                        {"key": k, "path": p}
-                                        for k, (p, _) in sources.items()
-                                    ],
+                                    "items": items,
                                 },
                             }
                         )
-    docs.append(
-        {
-            "apiVersion": "v1",
-            "kind": "ConfigMap",
-            "metadata": {"name": "okf-e2e-sources"},
-            "data": {k: text for k, (_, text) in sources.items()},
+    source_map = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {"name": "okf-e2e-sources"},
+        "data": {k: text for k, (_, text) in sources.items()},
+    }
+    if ingest_image:
+        import base64
+
+        source_map["binaryData"] = {
+            "finance-hotel-guide.docx": base64.b64encode(docx_bytes()).decode()
         }
-    )
+    docs.append(source_map)
     return docs
 
 
@@ -271,6 +306,11 @@ def main() -> int:
     parser.add_argument("--image", default="okf-mcp-server:dev")
     parser.add_argument(
         "--keep", action="store_true", help="keep the namespace for inspection"
+    )
+    parser.add_argument(
+        "--ingest-image",
+        default="",
+        help="run the refresh CronJob with this image and add a DOCX source",
     )
     args = parser.parse_args()
     namespace = f"okf-e2e-{secrets.token_hex(3)}"
@@ -292,7 +332,9 @@ def main() -> int:
         kube.run("rollout", "status", "deploy/postgres", "--timeout=180s", timeout=200)
 
         print("deploying the okf manifests ...")
-        kube.apply(product(args.image, client_secret, pg_password, SOURCES))
+        kube.apply(
+            product(args.image, client_secret, pg_password, SOURCES, args.ingest_image)
+        )
         kube.run("create", "job", "--from=cronjob/okf-refresh", "refresh-1")
         done = kube.run(
             "wait",
@@ -306,8 +348,9 @@ def main() -> int:
         check(
             "refresh Job (from the CronJob) syncs the share and publishes",
             "condition met" in done
-            and "synced share: 3 downloaded" in logs
-            and "published" in logs,
+            and f"synced share: {4 if args.ingest_image else 3} downloaded" in logs
+            and "published" in logs
+            and "FAILED" not in logs,
             logs[-600:],
         )
         kube.run(
@@ -386,9 +429,15 @@ def main() -> int:
 
         alice, bob = token("alice"), token("bob")
         seen = visible(alice)
+        finance = {"share/finance/travel", "share/public/handbook"}
+        if args.ingest_image:
+            finance.add(
+                "share/finance/hotel-guide"
+            )  # the DOCX, converted by Docling in the Job
         check(
-            "alice (finance) sees finance + public",
-            seen == {"share/finance/travel", "share/public/handbook"},
+            "alice (finance) sees finance + public"
+            + (" incl. the Docling-converted DOCX" if args.ingest_image else ""),
+            seen == finance,
             str(seen),
         )
         seen = visible(bob)
@@ -407,7 +456,9 @@ def main() -> int:
         kube.apply(
             [
                 d
-                for d in product(args.image, client_secret, pg_password, sources)
+                for d in product(
+                    args.image, client_secret, pg_password, sources, args.ingest_image
+                )
                 if d["kind"] in ("CronJob", "ConfigMap")
                 and d["metadata"]["name"] in ("okf-refresh", "okf-e2e-sources")
             ]

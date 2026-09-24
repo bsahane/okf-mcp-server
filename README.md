@@ -363,7 +363,7 @@ The server image is 1.25 GB. The ingest image (3.1 GB) adds Docling with CPU-onl
 
 `deployment/base` holds the Deployment, Service, ConfigMap, Secret, PVC and the refresh CronJob with its connectors ConfigMap; the overlays add the OpenShift-only BuildConfig, ImageStream and Route, or a local image for plain Kubernetes. Pods match OpenShift's restricted-v2 SCC: any non-root UID, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp and a read-only root filesystem. Authentication is on by default; fill in the ConfigMap's `SSO_*` URLs and the Secret, and provision PostgreSQL for the template's OAuth state. The CronJob writes snapshots to the PVC and the server reads them read-only, so a refresh is served without a restart. On a multi-node cluster give the PVC a ReadWriteMany storage class.
 
-Verified: `tests/e2e/k8s_e2e.py` deploys the Kubernetes overlay with Keycloak and PostgreSQL into a throwaway namespace (10 checks: arbitrary UID, read-only root, refresh Job from the CronJob, 401, per-group visibility, refresh without restart, audit), and `tests/e2e/validate_manifests.sh` validates both overlays strictly, the OpenShift kinds against OpenShift 4.18 schemas (also run in CI). The OpenShift overlay has not been applied to a live OpenShift cluster.
+Verified: `tests/e2e/k8s_e2e.py` deploys the Kubernetes overlay with Keycloak and PostgreSQL into a throwaway namespace (10 checks: arbitrary UID, read-only root, refresh Job from the CronJob, 401, per-group visibility, refresh without restart, audit); with `--ingest-image` the CronJob runs the ingest image and converts a Word document with Docling in the cluster, and `tests/e2e/validate_manifests.sh` validates both overlays strictly, the OpenShift kinds against OpenShift 4.18 schemas (also run in CI). The OpenShift overlay has not been applied to a live OpenShift cluster.
 
 ## Security model
 
@@ -402,6 +402,7 @@ make pre-commit       # ruff, ruff-format, mypy, pydocstyle, bandit, file checks
 pytest tests/test_http.py  # starts the real server and checks MCP over HTTP
 python tests/e2e/auth_e2e.py          # real Keycloak + PostgreSQL in Docker
 python tests/e2e/k8s_e2e.py           # deployment on a Kubernetes cluster (default context: orbstack)
+python tests/e2e/k8s_e2e.py --ingest-image okf-mcp-server-ingest:dev   # refresh with Docling, incl. a DOCX
 tests/e2e/validate_manifests.sh       # kubeconform, strict, incl. OpenShift schemas
 ```
 
