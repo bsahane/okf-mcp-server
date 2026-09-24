@@ -5,11 +5,29 @@ Runs separately from the MCP server; AI clients never trigger ingestion.
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import List, Optional
 
 from okf_mcp_server.src.settings import settings
+
+
+def _quiet_third_party() -> None:
+    """Hide model-loading chatter so FAILED/SKIPPED/WARNING lines stay readable.
+
+    Must run before Docling imports its models. RapidOCR resets its own logger
+    to INFO on import, so INFO is disabled globally. Warnings from Python's
+    `warnings` module (for example Pillow's DecompressionBombWarning) still show.
+    """
+    import logging
+    import warnings
+
+    os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+    os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+    os.environ.setdefault("TQDM_DISABLE", "1")
+    logging.disable(logging.INFO)
+    warnings.filterwarnings("ignore", category=UserWarning, module=r"torch\..*")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -33,6 +51,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="pre-downloaded Docling models (offline use)",
     )
     b.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="show Docling/OCR/model logs and progress bars",
+    )
+    b.add_argument(
         "--allow-failures",
         action="store_true",
         help="publish even if some files failed to extract (failures.json lists them)",
@@ -51,6 +75,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "build":
+        if not args.verbose:
+            _quiet_third_party()
         from okf_mcp_server.src.ingest.pipeline import build
 
         try:

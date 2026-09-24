@@ -110,7 +110,7 @@ async with Client("http://localhost:5001/mcp") as client:
 ## Ingest your own documents
 
 ```bash
-okf-ingest build /path/to/documents     # build and publish a new snapshot
+okf-ingest build /path/to/documents     # build and publish a new snapshot (-v for Docling/OCR logs)
 okf-ingest validate                     # re-check the published bundle
 okf-ingest eval questions.yaml          # measure retrieval quality (Hit@5)
 okf-ingest suggest-config /path/to/documents > _okf.yaml   # draft metadata to review
@@ -197,6 +197,8 @@ questions:
 ### Scanned PDFs and speed
 
 OCR runs only for PDFs where some page has no embedded text layer, which is a real scan. On born-digital PDFs it added no text in the pilot but made conversion 4.5× slower (3.5 s vs 0.8 s per page). The trade-off: text inside figures and diagrams of born-digital PDFs is not OCR'd. Unchanged files are never converted twice: a rebuild of four PDFs (171 pages) took 0.4 s instead of 12 minutes.
+
+Very large embedded images (above about 179 megapixels) are refused by Pillow's decompression-bomb protection and the file fails; around 90 megapixels Pillow only warns.
 
 ### Offline and air-gapped use
 

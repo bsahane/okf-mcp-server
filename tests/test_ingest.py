@@ -1,6 +1,7 @@
 """Tests for ingestion, snapshots, validation and evaluation (no Docling needed)."""
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -607,3 +608,39 @@ class TestEvaluateAndCli:
         bad.write_text("no frontmatter")
         assert cli_main(["--data-dir", str(published), "validate"]) == 1
         assert "bad.md" in capsys.readouterr().out
+
+
+def test_build_is_quiet_by_default_and_verbose_on_request(
+    corpus, tmp_path, monkeypatch
+):
+    import logging
+
+    from okf_mcp_server.src.ingest import cli
+
+    calls = []
+    monkeypatch.setattr(cli, "_quiet_third_party", lambda: calls.append("quiet"))
+    data = str(tmp_path / "d")
+    assert cli_main(["--data-dir", data, "build", str(corpus)]) == 0
+    assert cli_main(["--data-dir", data, "build", "-v", str(corpus)]) == 0
+    assert calls == ["quiet"]
+
+    monkeypatch.undo()
+    for var in (
+        "TRANSFORMERS_VERBOSITY",
+        "HF_HUB_DISABLE_PROGRESS_BARS",
+        "TQDM_DISABLE",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    try:
+        cli._quiet_third_party()
+        assert logging.getLogger("RapidOCR").isEnabledFor(logging.INFO) is False
+        assert logging.getLogger("x").isEnabledFor(logging.WARNING) is True
+        assert os.environ["TRANSFORMERS_VERBOSITY"] == "error"
+    finally:
+        logging.disable(logging.NOTSET)
+        for var in (
+            "TRANSFORMERS_VERBOSITY",
+            "HF_HUB_DISABLE_PROGRESS_BARS",
+            "TQDM_DISABLE",
+        ):
+            os.environ.pop(var, None)
