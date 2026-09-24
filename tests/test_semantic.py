@@ -189,3 +189,75 @@ def test_warm_up_loads_the_embedder_once(fake_embedder, monkeypatch):
     monkeypatch.setattr(service.settings, "OKF_SEMANTIC_SEARCH", False)
     service.warm_up_search()  # disabled: no model use
     assert fake_embedder.calls == 1
+
+
+class TestVectorBackends:
+    """sqlite-vec for large corpora; filters apply before ranking on both."""
+
+    def build(self, tmp_path, corpus_writer, backend, files=FILES):
+        from okf_mcp_server.src.knowledge import index as index_module
+
+        data = tmp_path / f"data-{backend}"
+        src = corpus_writer(tmp_path / f"src-{backend}", files)
+        orig = index_module.build_index
+
+        def forced(*args, **kwargs):
+            kwargs["vector_backend"] = backend
+            return orig(*args, **kwargs)
+
+        import okf_mcp_server.src.ingest.pipeline as pipeline_module
+
+        pipeline_module_build = pipeline_module.build_index
+        pipeline_module.build_index = forced
+        try:
+            assert build(src, data).published
+        finally:
+            pipeline_module.build_index = pipeline_module_build
+        return current_snapshot(data).index
+
+    def test_sqlite_vec_matches_numpy(self, tmp_path, corpus_writer, fake_embedder):
+        pytest.importorskip("sqlite_vec")
+        results = {}
+        for backend in ("numpy", "sqlite-vec"):
+            db = self.build(tmp_path, corpus_writer, backend)
+            with SearchIndex(db, embedder=fake_embedder) as index:
+                assert index._meta("vector_backend") == backend
+                results[backend] = [
+                    r["concept_id"]
+                    for r in index.search("physician certificate lodging")
+                ]
+        assert results["numpy"] == results["sqlite-vec"]
+
+    def test_auto_switches_at_the_limit(self, monkeypatch):
+        pytest.importorskip("sqlite_vec")
+        from okf_mcp_server.src.knowledge import index as index_module
+
+        monkeypatch.setattr(index_module, "VECTOR_MEMORY_LIMIT", 10)
+        assert index_module.choose_vector_backend(10) == "numpy"
+        assert index_module.choose_vector_backend(11) == "sqlite-vec"
+        with pytest.raises(ValueError):
+            index_module.choose_vector_backend(1, "faiss")
+
+    @pytest.mark.parametrize("backend", ["numpy", "sqlite-vec"])
+    def test_small_allowed_set_is_found_despite_many_closer_passages(
+        self, tmp_path, corpus_writer, fake_embedder, backend
+    ):
+        """The caller may see one far-away document; 60 closer ones are hidden."""
+        pytest.importorskip("sqlite_vec")
+        files = {
+            f"hr/case-{i}.md": f"# Case {i}\n\nA doctor issued a fit note and sick certificate {i}.\n"
+            for i in range(60)
+        }
+        files["public/visible.md"] = (
+            "# Visible\n\nMedical questions go to the lodging desk.\n"
+        )
+        files["_okf.yaml"] = "access:\n  hr/: [group:hr]\n  public/: ['*']\n"
+        db = self.build(tmp_path, corpus_writer, backend, files)
+        from okf_mcp_server.src.knowledge.access import Identity
+
+        principals = Identity(subject="eve").principals
+        with SearchIndex(db, embedder=fake_embedder) as index:
+            results = index.search(
+                "physician certificate", limit=1, principals=principals
+            )
+        assert [r["concept_id"] for r in results] == ["public/visible"]

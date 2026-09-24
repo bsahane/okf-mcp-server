@@ -48,6 +48,7 @@ ingest = [
 semantic = [
     "torch==2.14.0",
     "transformers==5.8.1",
+    "sqlite-vec==0.1.9",
 ]
 dev = [
     "pytest==8.4.1",
@@ -63,7 +64,8 @@ dev = [
     "bandit==1.9.3",
     "safety",
     "pydocstyle",
-    "types-PyYAML==6.0.12.20260906"
+    "types-PyYAML==6.0.12.20260906",
+    "sqlite-vec==0.1.9"
 ]
 
 [project.scripts]

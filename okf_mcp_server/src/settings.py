@@ -339,6 +339,17 @@ class Settings(BaseSettings):
             "example": True,
         },
     )
+    OKF_VECTOR_BACKEND: Literal["auto", "numpy", "sqlite-vec"] = Field(
+        default="auto",
+        json_schema_extra={
+            "env": "OKF_VECTOR_BACKEND",
+            "description": (
+                "Where builds put vectors: numpy (in memory, fastest), sqlite-vec "
+                "(on disk, flat memory) or auto (numpy up to 50k vectors)"
+            ),
+            "example": "auto",
+        },
+    )
     OKF_DEFAULT_ACCESS: Literal["deny", "authenticated"] = Field(
         default="deny",
         json_schema_extra={

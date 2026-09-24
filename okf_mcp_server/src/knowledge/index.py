@@ -37,6 +37,45 @@ CANDIDATES_PER_RESULT = 5
 TOKENIZE = "unicode61 remove_diacritics 2"
 # Reciprocal-rank fusion constant (the usual 60): damps the weight of top ranks.
 RRF_K = 60
+# In-memory (numpy) vector search up to this many vectors, sqlite-vec above.
+# Measured: numpy needs ~3.6 KB/vector of process memory (300k -> 1.1 GB, too
+# much for a 512 MiB pod) but is ~6x faster; sqlite-vec stays at ~40 MB
+# (300k: 180 ms/query vs 32 ms). 50k keeps numpy peaks around 180 MB.
+VECTOR_MEMORY_LIMIT = 50_000
+
+
+def load_sqlite_vec(conn: sqlite3.Connection) -> bool:
+    """Load the sqlite-vec extension into `conn`; False if unavailable."""
+    try:
+        import sqlite_vec
+
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        return True
+    except (ImportError, AttributeError, sqlite3.OperationalError):
+        return False
+
+
+def choose_vector_backend(count: int, requested: str = "auto") -> str:
+    """`numpy` or `sqlite-vec` for an index with `count` vectors.
+
+    `auto` uses numpy up to VECTOR_MEMORY_LIMIT and sqlite-vec above it when
+    the extension is installed (otherwise numpy).
+
+    Raises:
+        ValueError: For an unknown backend, or sqlite-vec requested but missing.
+    """
+    if requested not in ("auto", "numpy", "sqlite-vec"):
+        raise ValueError(f"unknown vector backend: {requested}")
+    available = load_sqlite_vec(sqlite3.connect(":memory:"))
+    if requested == "sqlite-vec" and not available:
+        raise ValueError(
+            "sqlite-vec requested but not installed (pip install sqlite-vec)"
+        )
+    if requested != "auto":
+        return requested
+    return "sqlite-vec" if count > VECTOR_MEMORY_LIMIT and available else "numpy"
 
 
 class Encoder(Protocol):
@@ -206,6 +245,7 @@ def build_index(
     embedder: Optional[Encoder] = None,
     reuse: Optional[Dict[str, bytes]] = None,
     stats: Optional[Dict[str, int]] = None,
+    vector_backend: str = "auto",
 ) -> int:
     """Build a fresh index file for one snapshot. Returns the passage count.
 
@@ -288,6 +328,20 @@ def build_index(
             conn.execute(
                 "INSERT INTO meta VALUES ('embedding_model', ?)", (embedder.model_id,)
             )
+            backend = choose_vector_backend(len(rows), vector_backend)
+            if backend == "sqlite-vec" and rows:
+                load_sqlite_vec(conn)
+                dim = (
+                    len(conn.execute("SELECT v FROM vectors LIMIT 1").fetchone()[0])
+                    // 4
+                )
+                conn.execute(
+                    f"CREATE VIRTUAL TABLE vec USING vec0(embedding float[{int(dim)}] distance_metric=cosine)"
+                )
+                conn.execute(
+                    "INSERT INTO vec(rowid, embedding) SELECT id, v FROM vectors"
+                )
+            conn.execute("INSERT INTO meta VALUES ('vector_backend', ?)", (backend,))
             if stats is not None:
                 stats["embedded"] = len(todo)
                 stats["vectors_reused"] = len(rows) - len(todo)
@@ -329,6 +383,24 @@ def format_location(location: Dict[str, Any]) -> str:
         start, end = location["lines"]
         parts.append(f"lines {start}–{end}")
     return ", ".join(parts)
+
+
+@lru_cache(maxsize=512)
+def _allowed_ids(
+    db_uri: str, snapshot_id: str, where: str, params: Tuple[Any, ...]
+) -> FrozenSet[int]:
+    """Passage IDs a filter allows, cached per immutable snapshot.
+
+    The scan costs ~200 ms at 300k passages; callers repeat the same
+    principals and filters, so later queries skip it. `where` is built only
+    from fixed fragments with ? placeholders (see SearchIndex._filter_sql).
+    """
+    conn = sqlite3.connect(db_uri, uri=True)
+    try:
+        sql = f"SELECT p.id FROM passages p WHERE 1 = 1{where}"  # nosec B608
+        return frozenset(r[0] for r in conn.execute(sql, params))
+    finally:
+        conn.close()
 
 
 @lru_cache(maxsize=4)
@@ -445,25 +517,44 @@ class SearchIndex:
     def _semantic_ids(
         self, query: str, where: str, params: List[Any], pool: int
     ) -> List[int]:
+        """Nearest passages to the query among those the filters allow.
+
+        Filters (type, tags, access) are applied before ranking, so a caller
+        who may see only a small part of the corpus still gets `pool`
+        candidates: numpy masks disallowed rows; sqlite-vec widens its k until
+        enough allowed rows are found.
+        """
         if self.embedder is None or not query.strip():
             return []
+        allowed: Optional[FrozenSet[int]] = None
+        if where:
+            allowed = _allowed_ids(self._uri, self.snapshot_id(), where, tuple(params))
+            if not allowed:
+                return []
+        vector = self.embedder.encode([query], "query")[0].astype(np.float32)
+        if self._meta("vector_backend") == "sqlite-vec" and load_sqlite_vec(self.conn):
+            total = self.conn.execute("SELECT count(*) FROM vectors").fetchone()[0]
+            k = pool * 4
+            while True:
+                found = [
+                    r[0]
+                    for r in self.conn.execute(
+                        "SELECT rowid FROM vec WHERE embedding MATCH ? AND k = ?",
+                        (vector.tobytes(), min(k, total)),
+                    )
+                ]
+                top = [i for i in found if allowed is None or i in allowed]
+                if len(top) >= pool or k >= total:
+                    return top[:pool]
+                k *= 4
         ids, matrix = _vector_matrix(self._uri, self.snapshot_id())
         if not len(ids):
             return []
-        scores = matrix @ self.embedder.encode([query], "query")[0]
-        # Over-fetch so filtering by type/tags still leaves `pool` candidates.
-        top = ids[np.argsort(-scores)[: pool * 4]].tolist()
-        if where:
-            marks = ",".join("?" * len(top))  # placeholders only
-            allowed = {
-                r[0]
-                for r in self.conn.execute(
-                    f"SELECT p.id FROM passages p WHERE p.id IN ({marks}){where}",  # nosec B608
-                    [*top, *params],
-                )
-            }
-            top = [i for i in top if i in allowed]
-        return top[:pool]
+        scores = matrix @ vector
+        if allowed is not None:
+            scores = np.where(np.isin(ids, list(allowed)), scores, -np.inf)
+        order = np.argsort(-scores)[:pool]
+        return [int(ids[i]) for i in order if np.isfinite(scores[i])]
 
     def search(
         self,

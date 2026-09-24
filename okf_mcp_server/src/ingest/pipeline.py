@@ -49,6 +49,7 @@ from okf_mcp_server.src.knowledge.snapshot import (
     publish,
 )
 from okf_mcp_server.src.knowledge.validate import validate_bundle
+from okf_mcp_server.src.settings import settings
 
 # Builds embed through the lazy wrapper: no model load when every vector is reused.
 get_embedder = LazyEmbedder
@@ -699,7 +700,14 @@ def _build(
     stats: Dict[str, int] = {}
     reuse = load_vectors(prev.index, embedder.model_id) if embedder and prev else {}
     report.passages = build_index(
-        snap.bundle, snap.extraction, snap.index, snapshot_id, embedder, reuse, stats
+        snap.bundle,
+        snap.extraction,
+        snap.index,
+        snapshot_id,
+        embedder,
+        reuse,
+        stats,
+        vector_backend=settings.OKF_VECTOR_BACKEND,
     )
     report.embedded = stats.get("embedded", 0)
     report.vectors_reused = stats.get("vectors_reused", 0)
