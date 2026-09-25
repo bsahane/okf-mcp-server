@@ -619,12 +619,11 @@ class TestSyncSafety:
     def test_case_only_rename_keeps_the_file(self, tmp_path):
         mirror = tmp_path / "m"
         sync("s", mirror, [item("1", "Policy.md")])
-        result = sync("s", mirror, [item("1", "policy.md", "v2")])
-        assert result.deleted == []
-        assert [p.name for p in mirror.iterdir() if p.is_file()] in (
-            ["policy.md"],
-            ["Policy.md"],  # case-insensitive filesystems may keep the old case
-        )
+        result = sync("s", mirror, [item("1", "policy.md", "v2", content=b"# New\n")])
+        files = [p for p in mirror.iterdir() if p.is_file()]
+        # One file with the new content, whichever case the filesystem keeps.
+        assert len(files) == 1 and files[0].read_bytes() == b"# New\n"
+        assert result.deleted in ([], ["Policy.md"])
 
     def test_empty_listing_keeps_the_mirror(self, tmp_path):
         mirror = tmp_path / "m"

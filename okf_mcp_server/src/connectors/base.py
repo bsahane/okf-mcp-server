@@ -188,11 +188,21 @@ def sync(source: str, mirror: Path, items: Iterable[RemoteItem]) -> SyncResult:
             f"(delete {mirror} to empty it on purpose)"
         )
         return result
-    keep = {fold(entry["path"]) for entry in new_state.values()}
+    keep = {fold(entry["path"]): entry["path"] for entry in new_state.values()}
     for entry in old.values():
-        if fold(entry["path"]) not in keep and (mirror / entry["path"]).is_file():
-            (mirror / entry["path"]).unlink()
-            result.deleted.append(entry["path"])
+        old_path = mirror / entry["path"]
+        kept = keep.get(fold(entry["path"]))
+        if kept == entry["path"] or not old_path.is_file():
+            continue
+        # A case-only rename on a case-insensitive disk: the old name is the new file.
+        if (
+            kept
+            and (mirror / kept).exists()
+            and os.path.samefile(mirror / kept, old_path)
+        ):
+            continue
+        old_path.unlink()
+        result.deleted.append(entry["path"])
     _prune_empty_dirs(mirror)
     _write_json(state_path, new_state)
     _write_json(mirror / ACCESS_FILE, access)
