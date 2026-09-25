@@ -3,7 +3,7 @@
 Starts Keycloak and PostgreSQL in Docker, builds a corpus with access rules,
 runs the MCP server with authentication on, and checks as real users:
 
-- no token -> 401; token for another client (wrong audience) -> 403
+- no token -> 401; token for another client (wrong audience) -> 403; refresh token rejected
 - alice (finance) and bob (hr) each see only their documents plus public
 - get_knowledge on a denied document answers "not found"
 - revoking bob's session makes his token stop working (401)
@@ -354,6 +354,19 @@ def main() -> int:
         check(
             "token for another client (wrong audience) -> 403",
             r.status_code == 403,
+            str(r.status_code),
+        )
+
+        refresh = token(kc, "alice", passwords["alice"])["refresh_token"]
+        r = httpx.post(
+            url,
+            json=init,
+            headers={**headers, "Authorization": f"Bearer {refresh}"},
+            timeout=10,
+        )
+        check(
+            "refresh token used as a bearer token -> rejected",
+            r.status_code in (401, 403),
             str(r.status_code),
         )
 

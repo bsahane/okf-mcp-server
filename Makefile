@@ -91,8 +91,8 @@ local: ## Start MCP server locally
 CONTAINER_TOOL ?= $(shell command -v podman >/dev/null 2>&1 && echo podman || echo docker)
 
 container: ## Build and run with podman/docker compose
-	export PODMAN_COMPOSE_SILENT=true
-	$(CONTAINER_TOOL) compose up --build --force-recreate --remove-orphans --timeout=60
+	@test -f .env || cp .env.example .env
+	PODMAN_COMPOSE_SILENT=true $(CONTAINER_TOOL) compose up --build --force-recreate --remove-orphans --timeout=60
 
 deploy: ## Deploy to target (usage: make deploy openshift)
 	@if [ "$(filter openshift,$(MAKECMDGOALS))" = "openshift" ]; then \
@@ -108,11 +108,15 @@ deploy: ## Deploy to target (usage: make deploy openshift)
 		oc project $(NAMESPACE) || (echo "Error: Cannot switch to namespace '$(NAMESPACE)'. Check permissions." && exit 1); \
 		echo "Creating BuildConfig and ImageStream..."; \
 		oc apply -n $(NAMESPACE) -f deployment/openshift/buildconfig.yaml; \
+		oc apply -n $(NAMESPACE) -f deployment/openshift/buildconfig-ingest.yaml; \
 		oc apply -n $(NAMESPACE) -f deployment/openshift/imagestream.yaml; \
-		echo "Building container image from source..."; \
-		oc start-build -n $(NAMESPACE) okf-mcp-server --from-dir=. --follow || exit 1; \
+		echo "Building the server and ingest images from tracked files (not .venv or data/)..."; \
+		REF=$$(git stash create); git archive --format=tar.gz -o /tmp/okf-mcp-server-src.tar.gz $${REF:-HEAD} || exit 1; \
+		oc start-build -n $(NAMESPACE) okf-mcp-server --from-archive=/tmp/okf-mcp-server-src.tar.gz --follow --wait || exit 1; \
+		oc start-build -n $(NAMESPACE) okf-mcp-server-ingest --from-archive=/tmp/okf-mcp-server-src.tar.gz --follow --wait || exit 1; \
 		echo "Deploying resources to OpenShift..."; \
 		oc apply -n $(NAMESPACE) -k deployment/openshift/ || exit 1; \
+		oc rollout restart -n $(NAMESPACE) deployment/okf-mcp-server; \
 		echo "Deployment complete!"; \
 		echo "Checking deployment status..."; \
 		oc get pods -l app=okf-mcp-server; \
@@ -133,7 +137,7 @@ undeploy: ## Remove deployment (usage: make undeploy openshift)
 		which oc > /dev/null || (echo "Error: oc CLI not found. Please install OpenShift CLI." && exit 1); \
 		oc project $(NAMESPACE) || (echo "Error: Cannot switch to namespace '$(NAMESPACE)'" && exit 1); \
 		echo "Removing OpenShift deployment..."; \
-		oc delete deployment,service,route,configmap,secret,pvc,buildconfig,imagestream -l app=okf-mcp-server 2>/dev/null || true; \
+		oc delete deployment,cronjob,job,service,route,configmap,secret,pvc,buildconfig,imagestream -l app=okf-mcp-server 2>/dev/null || true; \
 		echo "Undeployment complete!"; \
 	else \
 		echo "Usage: make undeploy [openshift]"; \

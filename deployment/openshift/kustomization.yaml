@@ -3,5 +3,19 @@ kind: Kustomization
 resources:
   - ../base
   - buildconfig.yaml
+  - buildconfig-ingest.yaml
   - imagestream.yaml
   - route.yaml
+patches:
+  # The refresh CronJob runs the ingest image, which also converts PDF and Office files.
+  - target: {kind: CronJob, name: okf-refresh}
+    patch: |
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/image
+        value: okf-mcp-server:ingest
+      # Docling's layout and OCR models need more than 1Gi on PDFs (measured ~1.1 GB RSS on two small ones).
+      - op: replace
+        path: /spec/jobTemplate/spec/template/spec/containers/0/resources
+        value:
+          requests: {memory: 2Gi, cpu: 500m}
+          limits: {memory: 4Gi, cpu: "2"}

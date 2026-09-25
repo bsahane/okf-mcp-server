@@ -87,6 +87,7 @@ class TestIdentity:
                 "sub": "u1",
                 "iss": "https://sso/realms/okf",
                 "email": "A@x.io",
+                "email_verified": True,
                 "preferred_username": "alice",
                 "groups": ["/finance/payroll", "hr"],
                 "aud": ["okf-mcp", "account"],
@@ -95,12 +96,12 @@ class TestIdentity:
             required_audience="okf-mcp",
             required_scope="okf.read",
         )
-        assert identity.groups == {"finance/payroll", "payroll", "hr"}
+        assert identity.groups == {"finance/payroll", "hr"}
         assert {
             "user:u1",
             "user:a@x.io",
             "user:alice",
-            "group:payroll",
+            "group:finance/payroll",
             "*",
         } <= identity.principals
 
@@ -124,10 +125,26 @@ class TestIdentity:
         with pytest.raises(AccessError, match=message):
             identity_from_claims(claims, **kwargs)
 
-    def test_azp_counts_as_audience(self):
-        assert identity_from_claims(
-            {"sub": "u", "azp": "okf-mcp"}, required_audience="okf-mcp"
+    def test_azp_is_not_an_audience(self):
+        with pytest.raises(AccessError, match="audience"):
+            identity_from_claims(
+                {"sub": "u", "azp": "okf-mcp"}, required_audience="okf-mcp"
+            )
+
+    def test_claims_cannot_borrow_other_identities(self):
+        identity = identity_from_claims(
+            {
+                "sub": "m",
+                "groups": ["/marketing/finance"],
+                "email": "carol@x.io",
+                "email_verified": False,
+                "preferred_username": "alice@x.io",
+            }
         )
+        assert identity.principals == {"*", "user:m", "group:marketing/finance"}
+        assert identity_from_claims(
+            {"sub": "m", "groups": "HR Contractors"}
+        ).groups == {"HR Contractors"}
 
     def test_normalize_and_allowed(self):
         assert normalize_access({"groups": ["/Finance"], "users": ["Bob@x"]}) == [
@@ -354,7 +371,7 @@ class TestMiddleware:
                 lambda h: {
                     "active": True,
                     "sub": "u9",
-                    "azp": "okf-mcp",
+                    "aud": "okf-mcp",
                     "groups": ["/hr"],
                 }
             ),
@@ -366,3 +383,10 @@ class TestMiddleware:
         )
         identity = seen[service.IDENTITY_STATE_KEY]
         assert identity.subject == "u9" and "hr" in identity.groups
+
+
+def test_refresh_and_id_tokens_are_not_access_tokens():
+    for typ in ("Refresh", "Offline", "ID"):
+        with pytest.raises(AccessError, match="not an access token"):
+            identity_from_claims({"sub": "u", "typ": typ})
+    assert identity_from_claims({"sub": "u", "typ": "Bearer"}).subject == "u"

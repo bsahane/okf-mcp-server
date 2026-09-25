@@ -143,6 +143,42 @@ Built on 24 September 2026 in this repository and verified locally (macOS ARM64,
   - *Connectors, refresh, audit:* file shares (POSIX permissions), SharePoint via Microsoft Graph, Google Drive v3; incremental mirror sync with permission files; `okf-ingest sync|refresh`; a Kubernetes CronJob and cron example; ingestion and tool audit events. SharePoint and Drive are verified against API-faithful mock servers only.
   - *Images:* running Docling inside the image exposed four problems that local runs could not: CUDA torch plus uv's cache (13.2 GB), CUDA-built torchvision failing against CPU torch (every conversion failed), GUI OpenCV needing libGL (every PDF failed), and models downloaded at runtime into read-only paths. Fixed with CPU torch/torchvision, headless OpenCV, pinned transformers and models baked into `/app/models`: ingest image 3.1 GB, server 1.25 GB. The Northwind corpus ingests in the image with no network, read-only root and an arbitrary UID (59 concepts, same as local); in the cluster, the CronJob with the ingest image converts a DOCX (10/10).
   - *Deployment:* base + kubernetes/openshift overlays, restricted-v2-compatible pods, auth on by default. On OrbStack Kubernetes 1.35 (10/10): arbitrary UID, read-only root filesystem, CronJob-driven refresh to the PVC, per-group access via Keycloak in the cluster, refresh served without restart, audit. OpenShift kinds are validated strictly against 4.18 schemas in CI; not yet applied to a live OpenShift cluster. The cluster run found and fixed: a named image user blocking `runAsNonRoot`, ConfigMap folder symlinks that the file-share connector ignored, no place for build rules in connector-fed builds, and stale `make deploy` paths.
+- **Live checks (25 September 2026), waiting on access:** the department pilot needs the department's documents and about 30 questions from its users. The live-tenant and OpenShift runs need a SharePoint app registration and test site, a Google service account and shared folder, and an OpenShift project; none were available on the build machine. Each is now one command, documented in [docs/live-checks.md](docs/live-checks.md).
+  - **Pilot template:** `okf-ingest eval` now also accepts source file paths as expected entries, so users can name the files they know.
+  - **Connectors:** `tests/e2e/connectors_live.py` runs a read-only sync into a temporary mirror. It checks errors, permissions per file, incremental re-sync, a conformant build and `--expect` principals. It was exercised on a local share.
+  - **OpenShift:** `k8s_e2e.py --platform openshift --build` runs the same checks with in-cluster BuildConfig builds, the project's restricted-v2 UID range and the Route. `--namespace` reuses a project and deletes only the objects the test created; this was verified on OrbStack with an unrelated ConfigMap left intact.
+  - **Found while preparing the OpenShift run:**
+    - The overlay built only the server image, so the CronJob could not convert PDFs. A second BuildConfig now builds the ingest image, and the overlay's CronJob uses it.
+    - `make deploy openshift` uploaded the whole folder (`.venv`, `data/`). It now uploads a 260 KB `git archive` of the tracked files.
+    - A ReadWriteOnce PVC would fail to attach on multi-node clusters. The Deployment now uses `Recreate`, and the CronJob has pod affinity to the server's node.
+    - The Kubernetes run passed 10/10 again after these changes.
+- **Deep review (25 September 2026):** three independent reviewers covered access control and search, connectors and ingestion, and deployment and docs. Their 23 findings were reproduced and fixed, each with a regression test or a changed e2e check.
+  - *Connectors:*
+    - Names that differ only in case or Unicode form overwrote each other on macOS, so a restricted file could be published under a public ACL.
+    - An empty listing (an unmounted share or an unshared folder) wiped the mirror and published an empty snapshot.
+    - A case-only rename deleted the new file.
+    - Download errors logged SharePoint `tempauth` URLs.
+    - Drive items without visible permissions (shared drives, Viewer service accounts) were hidden from everyone; they now get the source `access` default.
+    - A removed source or `okf_config` stayed published.
+    - Long names lost their extension.
+  - *Identity:*
+    - A Keycloak subgroup leaf granted a same-named top-level group.
+    - An unverified email, or an email-shaped username, matched `user:<email>` rules.
+    - `azp` counted as the audience.
+    - A string groups claim was split on spaces.
+    - Refresh and ID tokens are now rejected.
+  - *Tools:*
+    - `INDEX`/`LOG` in another case read the unfiltered index on case-insensitive disks.
+    - `access:` left empty silently removed a folder's rule.
+    - Failed and denied calls were not audited.
+  - *Deployment:*
+    - No `fsGroup` on plain Kubernetes, so cloud disks were not writable.
+    - A 1Gi memory limit is too small for Docling on PDFs; the OpenShift CronJob now has a 4Gi limit.
+    - A redeploy kept the old image; it now runs `rollout restart`.
+    - The read-only check in the e2e could pass for the wrong reason.
+    - `suggest-config` output failed to build.
+    - Stale docs.
+  - *Results:* 501 tests pass (coverage 91%); Keycloak e2e 13/13; Kubernetes e2e 10/10 with and without the ingest image.
 - **Deferred:** a rollback command, since rolling back must not resurrect deleted or restricted documents (phase 5), and splitting long documents into multiple concepts.
 
 ## Decisions needed before implementation

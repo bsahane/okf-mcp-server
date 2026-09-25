@@ -197,7 +197,7 @@ questions:
     expected: []                                               # no answer in the corpus
 ```
 
-`okf-ingest eval` reports Hit@5, notes which multi-source questions were missing evidence, and flags deprecated or stale results. See [samples/finance-questions.yaml](samples/finance-questions.yaml).
+`okf-ingest eval` reports Hit@5, notes which multi-source questions were missing evidence, and flags deprecated or stale results. Expected entries can also be source file paths as users know them (`HR/Leave Policy 2024.docx`). See [samples/finance-questions.yaml](samples/finance-questions.yaml) and the pilot template [samples/pilot-template/questions.yaml](samples/pilot-template/questions.yaml).
 
 ### Scanned PDFs and speed
 
@@ -225,7 +225,7 @@ Docling downloads layout models on its first PDF conversion. To run without netw
 
 With `ENABLE_AUTH=True` every tool call needs a bearer token from your OIDC provider (Keycloak / Red Hat build of Keycloak, Entra ID, Okta, …). The server validates it by introspection and passes the caller's identity to the tools; tool arguments never carry identity.
 
-- **Tokens:** the audience (`aud`/`azp`) must include `OKF_REQUIRED_AUDIENCE` (403 otherwise); `OKF_REQUIRED_SCOPE` optionally requires a scope. Groups come from the `OKF_GROUPS_CLAIM` claim (Keycloak group paths like `/finance/payroll` match `finance/payroll` and `payroll`).
+- **Tokens:** the audience (`aud`) must include `OKF_REQUIRED_AUDIENCE` (403 otherwise); `OKF_REQUIRED_SCOPE` optionally requires a scope. Groups come from the `OKF_GROUPS_CLAIM` claim, by full path (Keycloak's `/finance/payroll` matches `group:finance/payroll`, not `group:payroll`). `user:` rules match the subject, the email only when `email_verified` is true, and the username unless it looks like someone else's email.
 - **Documents:** each concept carries an `access` list of principals: `group:<name>`, `user:<email, username or subject>`, or `*` (any signed-in user). It comes from, in order, `documents.<file>.access` in `_okf.yaml`, the source system's permissions recorded by a connector, and path-prefix rules:
 
   ```yaml
@@ -279,7 +279,7 @@ okf-ingest refresh connectors.yaml    # sync, then build and publish (schedule t
 - **Formats:** Google Docs, Sheets and Slides are exported as DOCX, XLSX and PPTX.
 - **Scheduling:** on Kubernetes/OpenShift the `okf-refresh` CronJob runs `refresh` nightly (`concurrencyPolicy: Forbid`; builds also lock the data directory). On a server, use cron: `0 2 * * * /opt/okf/.venv/bin/okf-ingest --data-dir /var/lib/okf/data refresh /etc/okf/connectors.yaml`.
 
-SharePoint and Google Drive are tested against mock servers that follow the Graph and Drive APIs (paging, throttling, redirects, exports, permissions); they have not yet been run against a live tenant. File shares are tested on real files and in the Kubernetes end-to-end run.
+SharePoint and Google Drive are tested against mock servers that follow the Graph and Drive APIs (paging, throttling, redirects, exports, permissions); they have not yet been run against a live tenant. `tests/e2e/connectors_live.py` does that read-only with your `connectors.yaml`, see [docs/live-checks.md](docs/live-checks.md). File shares are tested on real files and in the Kubernetes end-to-end run.
 
 ## MCP tools
 
@@ -356,14 +356,14 @@ data/
 docker build -t <registry>/okf-mcp-server:<tag> -f Containerfile .                  # server
 docker build -t <registry>/okf-mcp-server-ingest:<tag> --build-arg EXTRAS=ingest -f Containerfile .  # PDF/Office ingestion
 kubectl apply -k deployment/kubernetes      # plain Kubernetes (set the image in its kustomization)
-make deploy openshift NAMESPACE=<project>   # OpenShift: BuildConfig + ImageStream + Route
+make deploy openshift NAMESPACE=<project>   # OpenShift: builds both images in the cluster, ImageStream + Route
 ```
 
-The server image is 1.25 GB. The ingest image (3.1 GB) adds Docling with CPU-only PyTorch and headless OpenCV, and bakes Docling's layout, table and OCR models into `/app/models`, so refresh jobs need no internet and no writable paths beyond `/tmp`; point the CronJob at it for PDF and Office sources. Verified: the full Northwind corpus ingests in it air-gapped (`--network none`), read-only, as an arbitrary UID, with the same 59 concepts as a local build.
+The server image is 1.25 GB. The ingest image (3.1 GB) adds Docling with CPU-only PyTorch and headless OpenCV, and bakes Docling's layout, table and OCR models into `/app/models`, so refresh jobs need no internet and no writable paths beyond `/tmp`; point the CronJob at it for PDF and Office sources (the OpenShift overlay does, and builds it with a second BuildConfig). Verified: the full Northwind corpus ingests in it air-gapped (`--network none`), read-only, as an arbitrary UID, with the same 59 concepts as a local build.
 
-`deployment/base` holds the Deployment, Service, ConfigMap, Secret, PVC and the refresh CronJob with its connectors ConfigMap; the overlays add the OpenShift-only BuildConfig, ImageStream and Route, or a local image for plain Kubernetes. Pods match OpenShift's restricted-v2 SCC: any non-root UID, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp and a read-only root filesystem. Authentication is on by default; fill in the ConfigMap's `SSO_*` URLs and the Secret, and provision PostgreSQL for the template's OAuth state. The CronJob writes snapshots to the PVC and the server reads them read-only, so a refresh is served without a restart. On a multi-node cluster give the PVC a ReadWriteMany storage class.
+`deployment/base` holds the Deployment, Service, ConfigMap, Secret, PVC and the refresh CronJob with its connectors ConfigMap; the overlays add the OpenShift-only BuildConfig, ImageStream and Route, or a local image for plain Kubernetes. Pods match OpenShift's restricted-v2 SCC: any non-root UID, no privilege escalation, all capabilities dropped, RuntimeDefault seccomp and a read-only root filesystem. Authentication is on by default; fill in the ConfigMap's `SSO_*` URLs and the Secret, and provision PostgreSQL for the template's OAuth state. The CronJob writes snapshots to the PVC and the server reads them read-only, so a refresh is served without a restart. The PVC can be ReadWriteOnce: the Deployment uses the `Recreate` strategy and the CronJob has pod affinity to the server's node; with a ReadWriteMany storage class the affinity can be removed.
 
-Verified: `tests/e2e/k8s_e2e.py` deploys the Kubernetes overlay with Keycloak and PostgreSQL into a throwaway namespace (10 checks: arbitrary UID, read-only root, refresh Job from the CronJob, 401, per-group visibility, refresh without restart, audit); with `--ingest-image` the CronJob runs the ingest image and converts a Word document with Docling in the cluster, and `tests/e2e/validate_manifests.sh` validates both overlays strictly, the OpenShift kinds against OpenShift 4.18 schemas (also run in CI). The OpenShift overlay has not been applied to a live OpenShift cluster.
+Verified: `tests/e2e/k8s_e2e.py` deploys the Kubernetes overlay with Keycloak and PostgreSQL into a throwaway namespace (10 checks: arbitrary UID, read-only root, refresh Job from the CronJob, 401, per-group visibility, refresh without restart, audit); with `--ingest-image` the CronJob runs the ingest image and converts a Word document with Docling in the cluster, and `tests/e2e/validate_manifests.sh` validates both overlays strictly, the OpenShift kinds against OpenShift 4.18 schemas (also run in CI). `k8s_e2e.py --platform openshift --build` runs the same checks on OpenShift (in-cluster builds, restricted-v2 UID range, Route); it is ready but has not yet been run on a live OpenShift cluster, see [docs/live-checks.md](docs/live-checks.md).
 
 ## Security model
 
@@ -437,8 +437,8 @@ Tracked in detail in [PLAN.md](PLAN.md).
 - [x] sqlite-vec backend chosen automatically when the corpus outgrows in-memory search
 - [x] Connectors (file shares, SharePoint, Google Drive) and scheduled refresh
 - [x] Container image and Kubernetes deployment verified end to end; OpenShift manifests schema-validated
-- [ ] Pilot on your own department's documents with questions from its users
-- [ ] SharePoint and Google Drive against a live tenant; OpenShift on a live cluster
+- [ ] Pilot on your own department's documents with questions from its users (runbook and question template ready: [docs/live-checks.md](docs/live-checks.md))
+- [ ] SharePoint and Google Drive against a live tenant; OpenShift on a live cluster (one-command checks ready, need your access)
 
 ## Acknowledgements
 

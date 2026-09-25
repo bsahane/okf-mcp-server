@@ -376,6 +376,8 @@ def drive_server(public_key):
             assert json.loads(pad(claims))["scope"].endswith("drive.readonly")
             return httpx.Response(200, json={"access_token": "drive-token"})
         assert req.headers["Authorization"] == "Bearer drive-token"
+        if path == "/drive/v3/files/root1":
+            return httpx.Response(200, json={"id": "root1", "mimeType": gdrive.FOLDER})
         if path == "/drive/v3/files":
             assert params["supportsAllDrives"] == "true"
             if "'root1' in parents" in params["q"]:
@@ -591,3 +593,105 @@ def test_source_default_access_and_okf_config(tmp_path):
     )
     with pytest.raises(ValueError, match="okf_config not found"):
         connectors.load(cfg_file)
+
+
+class TestSyncSafety:
+    """Review findings: collisions, empty listings, leaked tokens, removed sources."""
+
+    def test_case_and_unicode_collisions_get_distinct_files(self, tmp_path):
+        mirror = tmp_path / "m"
+        sync(
+            "s",
+            mirror,
+            [
+                item("1", "Report.md", content=b"# Public\n"),
+                item("2", "report.md", principals=["group:hr"], content=b"# Secret\n"),
+                item("3", "café.md"),
+                item("4", "café.md"),
+            ],
+        )
+        acl = json.loads((mirror / ".okf/access.json").read_text())
+        assert len(acl) == 4 and acl["Report.md"] == ["*"]
+        secret = next(p for p, a in acl.items() if a == ["group:hr"])
+        assert (mirror / secret).read_bytes() == b"# Secret\n"
+        assert (mirror / "Report.md").read_bytes() == b"# Public\n"
+
+    def test_case_only_rename_keeps_the_file(self, tmp_path):
+        mirror = tmp_path / "m"
+        sync("s", mirror, [item("1", "Policy.md")])
+        result = sync("s", mirror, [item("1", "policy.md", "v2")])
+        assert result.deleted == []
+        assert [p.name for p in mirror.iterdir() if p.is_file()] in (
+            ["policy.md"],
+            ["Policy.md"],  # case-insensitive filesystems may keep the old case
+        )
+
+    def test_empty_listing_keeps_the_mirror(self, tmp_path):
+        mirror = tmp_path / "m"
+        sync("s", mirror, [item("1", "a.md")])
+        result = sync("s", mirror, [])
+        assert "<listing>" in result.errors and (mirror / "a.md").is_file()
+
+    def test_download_errors_do_not_leak_urls_with_tokens(self, tmp_path):
+        def fail(target):
+            req = httpx.Request(
+                "GET", "https://x.sharepoint.com/d.aspx?tempauth=SECRET"
+            )
+            raise httpx.HTTPStatusError(
+                "boom " + str(req.url), request=req, response=httpx.Response(503)
+            )
+
+        bad = RemoteItem(key="1", path="a.md", version="v", download=fail)
+        result = sync("s", tmp_path / "m", [bad])
+        assert "SECRET" not in str(result.errors) and "503" in result.errors["a.md"]
+
+    def test_long_names_keep_their_extension(self):
+        rel = safe_relpath("é" * 150 + ".pdf")
+        assert rel.endswith(".pdf") and len(rel.encode()) <= 200
+
+    def test_removed_source_and_okf_config_are_unpublished(self, tmp_path):
+        share = tmp_path / "share"
+        share.mkdir()
+        (share / "a.md").write_text("# A\n\ntext\n")
+        rules = tmp_path / "_okf.yaml"
+        rules.write_text("types: {}\n")
+        mirror = tmp_path / "mirror"
+        both = (
+            f"mirror: {mirror}\nokf_config: {rules}\nsources:\n"
+            f"  - {{name: one, kind: fileshare, path: {share}}}\n"
+            f"  - {{name: two, kind: fileshare, path: {share}}}\n"
+        )
+        cfg_file = tmp_path / "connectors.yaml"
+        cfg_file.write_text(both)
+        connectors.run(connectors.load(cfg_file))
+        assert (mirror / "two" / "a.md").is_file()
+        cfg_file.write_text(
+            f"mirror: {mirror}\nsources:\n  - {{name: one, kind: fileshare, path: {share}}}\n"
+        )
+        results = connectors.run(connectors.load(cfg_file))
+        assert not (mirror / "two").exists() and not (mirror / "_okf.yaml").exists()
+        assert any(r.source == "two" and r.deleted for r in results)
+
+    def test_drive_items_without_permissions_use_the_default(self):
+        def handler(req):
+            if req.url.path == "/drive/v3/files/root1":
+                return httpx.Response(200, json={"mimeType": gdrive.FOLDER})
+            return httpx.Response(
+                200,
+                json={
+                    "files": [{"id": "f", "name": "a.md", "mimeType": "text/markdown"}]
+                },
+            )
+
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        (only,) = gdrive.DriveSource(client, "t", "root1").items()
+        assert only.principals is None
+
+    def test_drive_folder_that_is_not_a_folder_fails_listing(self):
+        client = httpx.Client(
+            transport=httpx.MockTransport(
+                lambda req: httpx.Response(200, json={"mimeType": "application/pdf"})
+            )
+        )
+        with pytest.raises(ValueError, match="not a folder"):
+            list(gdrive.DriveSource(client, "t", "root1").items())

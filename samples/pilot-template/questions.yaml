@@ -1,0 +1,18 @@
+# Pilot question set for `okf-ingest eval`. Collect ~30 questions from the
+# department's users: things they really asked (tickets, chat, email), in their
+# own words. For each, the user names the file(s) that hold the answer, as they
+# see it in the share, SharePoint or Drive (path relative to the source folder).
+# Include a few questions the documents cannot answer (expected: []).
+#
+#   okf-ingest --data-dir data/dept build ~/Documents/pilot-docs
+#   okf-ingest --data-dir data/dept eval samples/pilot-template/questions.yaml
+#
+# Keep the filled-in copy outside git if the questions are internal.
+questions:
+  - question: How many days of annual leave do new employees get?
+    asked_by: team lead            # optional, for your own follow-up
+    expected: [HR/Leave Policy 2024.docx]
+  - question: Who approves travel above the hotel limit?
+    expected: [Finance/Travel Policy.pdf, Finance/Approval Matrix.xlsx]
+  - question: What is the parking allowance at the Pune office?
+    expected: []                   # not in the documents: must not be answered

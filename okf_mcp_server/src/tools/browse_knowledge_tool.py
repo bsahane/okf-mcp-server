@@ -60,6 +60,7 @@ def browse_knowledge(
             # listing means none are visible, reported as missing.
             raise BundleError(f"directory not found: {path}")
     except (BundleError, CursorError) as e:
+        audit("browse_knowledge", identity, path=path, outcome="error", error=str(e))
         raise ToolError(str(e)) from e
 
     page = entries[offset : offset + size]

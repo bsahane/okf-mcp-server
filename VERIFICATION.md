@@ -12,7 +12,7 @@ The local pilot works end to end after the fixes below. This does not verify rea
 | Ruff and mypy | Passed |
 | Pre-commit hooks, including Bandit | Passed |
 | Real DOCX and XLSX conversion | Passed through the existing Docling adapter tests |
-| Sample ingestion | 6 concepts, 17 passages, no extraction failures |
+| Sample ingestion | 6 concepts, 14 passages, no extraction failures |
 | Sample retrieval | Hit@5 = 1.0 for 8 answerable questions; all configured expected concepts retrieved |
 | Actual Streamable HTTP MCP application | Startup, discovery, browse/search/fetch, citations, tool errors and Host/Origin rejection passed |
 | Container runtime | Not verified: Docker daemon unavailable; Podman not installed |

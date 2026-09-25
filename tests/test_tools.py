@@ -236,7 +236,7 @@ class TestGetKnowledge:
         secret.write_text("---\ntype: Secret\n---\nsecret\n")
         bundle = published / "current" / "bundle"
         os.symlink(secret, bundle / "leak.md")
-        with pytest.raises(ToolError, match="outside"):
+        with pytest.raises(ToolError, match="concept not found"):
             get_knowledge("leak")
 
 
@@ -279,3 +279,55 @@ class TestAccessAndProtocol:
                 raise_on_error=False,
             )
             assert bad.is_error is True
+
+
+class TestReviewFindings:
+    """Reserved files, empty access entries and audit of failed calls."""
+
+    def test_reserved_names_are_not_concepts_in_any_case(self, published):
+        for name in ("INDEX", "Index", "LOG"):
+            with pytest.raises(ToolError, match="concept not found"):
+                get_knowledge(name)
+
+    def test_empty_document_access_is_rejected(self, tmp_path):
+        from okf_mcp_server.src.ingest.pipeline import load_config
+
+        (tmp_path / "_okf.yaml").write_text(
+            "documents:\n  hr/salaries.md: {access: }\n"
+        )
+        with pytest.raises(ValueError, match="access is empty"):
+            load_config(tmp_path)
+
+    def test_failed_calls_are_audited(self, published, monkeypatch):
+        from okf_mcp_server.src.knowledge import service
+
+        events = []
+        monkeypatch.setattr(
+            service, "audit", lambda tool, identity, **f: events.append((tool, f))
+        )
+        import okf_mcp_server.src.tools.browse_knowledge_tool as browse
+        import okf_mcp_server.src.tools.get_knowledge_tool as get
+        import okf_mcp_server.src.tools.search_knowledge_tool as search
+
+        for module in (browse, get, search):
+            monkeypatch.setattr(module, "audit", service.audit)
+        for call in (
+            lambda: browse.browse_knowledge("no/such/dir"),
+            lambda: get.get_knowledge("no/such"),
+            lambda: search.search_knowledge(""),
+        ):
+            with pytest.raises(ToolError):
+                call()
+        assert [t for t, f in events if f.get("outcome") == "error"] == [
+            "browse_knowledge",
+            "get_knowledge",
+            "search_knowledge",
+        ]
+
+
+def test_null_sections_in_okf_yaml_mean_empty(tmp_path):
+    """`suggest-config` emits `documents:` with only comments when it has no suggestions."""
+    from okf_mcp_server.src.ingest.pipeline import load_config
+
+    (tmp_path / "_okf.yaml").write_text("types:\ndocuments:\n  # none yet\naccess:\n")
+    assert load_config(tmp_path) == {"types": None, "documents": None, "access": None}

@@ -15,8 +15,16 @@ patches:
       - op: replace
         path: /spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent
+      # Cloud disks (EBS, PD, Azure Disk) start root-owned: make the PVC group-writable.
+      # (OpenShift's restricted-v2 SCC sets fsGroup itself, so this is not in base.)
+      - op: add
+        path: /spec/template/spec/securityContext/fsGroup
+        value: 0
   - target: {kind: CronJob, name: okf-refresh}
     patch: |
       - op: replace
         path: /spec/jobTemplate/spec/template/spec/containers/0/imagePullPolicy
         value: IfNotPresent
+      - op: add
+        path: /spec/jobTemplate/spec/template/spec/securityContext/fsGroup
+        value: 0

@@ -10,6 +10,10 @@ files, and maps Drive permissions to principals:
 - group   -> group:<group email>
 - domain  -> *   (anyone in the domain; this server already requires sign-in)
 - anyone  -> *
+
+Drive only returns permissions to accounts that can share the file, and never
+for shared drives; such items get the source's `access` default (or `_okf.yaml`
+rules) instead of being hidden from everyone.
 """
 
 import base64
@@ -161,6 +165,16 @@ class DriveSource:
 
     def items(self) -> Iterator[RemoteItem]:
         """Every file below the folder, with its permissions."""
+        # A wrong or unshared folder ID would otherwise list as empty and empty the mirror.
+        folder = request(
+            self.client,
+            "GET",
+            f"{API}/files/{self.folder_id}",
+            headers=self.headers,
+            params={"fields": "id,mimeType", "supportsAllDrives": "true"},
+        ).json()
+        if folder.get("mimeType") != FOLDER:
+            raise ValueError(f"{self.folder_id} is not a folder")
         stack = [(self.folder_id, "")]
         while stack:
             folder_id, prefix = stack.pop()
@@ -179,6 +193,8 @@ class DriveSource:
                     path=prefix + name,
                     version=file.get("md5Checksum") or file.get("modifiedTime", ""),
                     size=int(file["size"]) if file.get("size") else None,
-                    principals=principals_from(file.get("permissions") or []),
+                    principals=principals_from(file["permissions"])
+                    if file.get("permissions")
+                    else None,
                     download=partial(self._download, file),
                 )

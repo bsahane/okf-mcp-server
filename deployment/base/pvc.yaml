@@ -7,8 +7,9 @@ metadata:
     component: mcp-server
 spec:
   # The refresh CronJob writes snapshots (and the source mirror) here and the
-  # server reads them. ReadWriteOnce works when both run on one node; on a
-  # multi-node cluster use a ReadWriteMany storage class.
+  # server reads them. With ReadWriteOnce the CronJob is pinned to the
+  # server's node (pod affinity); a server restart during a long refresh can
+  # wait for the Job to release the volume. ReadWriteMany removes both limits.
   accessModes:
     - ReadWriteOnce
   resources:

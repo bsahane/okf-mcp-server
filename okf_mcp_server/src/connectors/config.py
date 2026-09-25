@@ -36,7 +36,12 @@ import httpx
 import yaml
 
 from okf_mcp_server.src.connectors import fileshare, gdrive, sharepoint
-from okf_mcp_server.src.connectors.base import RemoteItem, SyncResult, sync
+from okf_mcp_server.src.connectors.base import (
+    STATE_FILE,
+    RemoteItem,
+    SyncResult,
+    sync,
+)
 from okf_mcp_server.src.knowledge.access import normalize_access
 
 KINDS = ("fileshare", "sharepoint", "gdrive")
@@ -145,7 +150,18 @@ def run(
         shutil.copyfile(
             Path(str(config["okf_config"])).expanduser(), mirror / "_okf.yaml"
         )
+    elif (mirror / "_okf.yaml").is_file():
+        (mirror / "_okf.yaml").unlink()  # okf_config was removed: drop its rules too
     results = []
+    if not only:
+        # A source removed from the file must stop being published.
+        configured = {source["name"] for source in config["sources"]}
+        for folder in sorted(mirror.iterdir()):
+            if folder.name not in configured and (folder / STATE_FILE).is_file():
+                shutil.rmtree(folder)
+                results.append(
+                    SyncResult(source=folder.name, deleted=["<source removed>"])
+                )
     own_client = client is None
     client = client or httpx.Client(timeout=60)
     try:

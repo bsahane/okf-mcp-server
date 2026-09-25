@@ -7,6 +7,9 @@ metadata:
     component: mcp-server
 spec:
   replicas: 1
+  # One pod at a time: the knowledge PVC may be ReadWriteOnce (one node).
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: okf-mcp-server

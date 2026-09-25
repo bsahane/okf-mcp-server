@@ -10,13 +10,15 @@ Question file (YAML)::
       - question: Who approves exceptions to the parking rule?
         expected: []                          # no answer in the corpus
 
-An expected entry is a concept ID, or `concept#section` to require that exact
-section (section slugs are listed by `get_knowledge`). Hit@k is the fraction
+An expected entry is a concept ID, a source file path as users know it
+(`HR/Leave Policy 2024.docx`, mapped through the snapshot manifest), or
+`concept#section` to require that exact section (section slugs are listed by `get_knowledge`). Hit@k is the fraction
 of answerable questions with at least one expected entry in the top k
 results; `all_found` reports whether every entry was retrieved, and `rank` is
 the position of the first match (for MRR).
 """
 
+import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -30,6 +32,17 @@ def evaluate(data_dir: Path, questions_file: Path, k: int = 5) -> Dict[str, Any]
     """Run every question against the published snapshot's index."""
     spec = yaml.safe_load(questions_file.read_text(encoding="utf-8")) or {}
     snapshot = current_snapshot(data_dir)
+    manifest = snapshot.root / "manifest.json"
+    by_path = (
+        {
+            s["path"]: s["concept_id"]
+            for s in json.loads(manifest.read_text(encoding="utf-8"))[
+                "sources"
+            ].values()
+        }
+        if manifest.exists()
+        else {}
+    )
     rows = []
     from okf_mcp_server.src.knowledge.service import search_embedder
 
@@ -37,7 +50,8 @@ def evaluate(data_dir: Path, questions_file: Path, k: int = 5) -> Dict[str, Any]
         mode = index.mode
         for q in spec.get("questions") or []:
             expected = [
-                str(e).strip("/").removesuffix(".md") for e in q.get("expected") or []
+                by_path.get(str(e).strip("/"), str(e).strip("/").removesuffix(".md"))
+                for e in q.get("expected") or []
             ]
             results = index.search(str(q["question"]), limit=k)
             found = [r["concept_id"] for r in results]

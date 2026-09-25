@@ -82,25 +82,35 @@ def identity_from_claims(
     subject = str(claims.get("sub") or "")
     if not subject:
         raise AccessError("token has no subject")
+    # Keycloak marks refresh and ID tokens with `typ`; introspection reports them active too.
+    if str(claims.get("typ") or "").lower() in ("refresh", "offline", "id"):
+        raise AccessError("not an access token")
     if required_audience:
-        audiences = set(_as_list(claims.get("aud"))) | set(_as_list(claims.get("azp")))
-        if required_audience not in audiences:
+        # Only `aud`: `azp` names the client that asked, not who the token is for.
+        if required_audience not in _as_list(claims.get("aud")):
             raise AccessError(f"token audience does not include {required_audience!r}")
     if required_scope and required_scope not in _as_list(claims.get("scope")):
         raise AccessError(f"token lacks scope {required_scope!r}")
-    # Keycloak group paths look like "/finance/payroll"; keep the full path
-    # and each leaf so rules can name either.
-    groups = set()
-    for g in _as_list(claims.get(groups_claim)):
-        g = g.strip()
-        if g:
-            groups.add(g.strip("/"))
-            groups.add(g.rstrip("/").rsplit("/", 1)[-1])
+    # Keycloak group paths look like "/finance/payroll" and match
+    # `group:finance/payroll` only: a leaf name would also grant a same-named
+    # top-level group. A string claim is one group name, never split on spaces.
+    raw = claims.get(groups_claim)
+    groups = {
+        g.strip().strip("/") for g in ([raw] if isinstance(raw, str) else _as_list(raw))
+    }
+    # An unverified email, or a username shaped like an email, could claim
+    # someone else's `user:<email>` grants.
+    email = (
+        str(claims.get("email") or "") if claims.get("email_verified") is True else ""
+    )
+    username = str(claims.get("preferred_username") or claims.get("username") or "")
+    if "@" in username and username.lower() != email.lower():
+        username = ""
     return Identity(
         subject=subject,
         issuer=str(claims.get("iss") or ""),
-        email=str(claims.get("email") or ""),
-        username=str(claims.get("preferred_username") or claims.get("username") or ""),
+        email=email,
+        username=username,
         groups=frozenset(g for g in groups if g),
     )
 

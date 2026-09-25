@@ -55,11 +55,15 @@ def get_knowledge(
     snapshot = open_snapshot()
     size = max(500, min(int(page_size), MAX_PAGE_CHARS))
     try:
-        fm, body = read_concept(snapshot.bundle, concept_id)
-        if not can_see(identity, fm):
-            # Same message as a missing concept, so existence is not revealed.
-            audit("get_knowledge", identity, concept_id=concept_id, outcome="denied")
-            raise BundleError(f"concept not found: {concept_id}")
+        try:
+            fm, body = read_concept(snapshot.bundle, concept_id)
+        except BundleError:
+            fm, body = None, ""
+        if fm is None or not can_see(identity, fm):
+            # One message for missing, unreadable and denied, so existence is not revealed.
+            outcome = "denied" if fm is not None else "error"
+            audit("get_knowledge", identity, concept_id=concept_id, outcome=outcome)
+            raise ToolError(f"concept not found: {concept_id}")
         cid = concept_id.strip().strip("/").removesuffix(".md")
         sections = split_sections(body)
         if section:
@@ -72,7 +76,24 @@ def get_knowledge(
             content = body
         target = f"get:{cid}#{section or ''}"
         offset = decode_cursor(cursor, snapshot.id, target)
+    except ToolError as e:
+        if "concept not found" not in str(e):
+            audit(
+                "get_knowledge",
+                identity,
+                concept_id=concept_id,
+                outcome="error",
+                error=str(e),
+            )
+        raise
     except (BundleError, CursorError) as e:
+        audit(
+            "get_knowledge",
+            identity,
+            concept_id=concept_id,
+            outcome="error",
+            error=str(e),
+        )
         raise ToolError(str(e)) from e
 
     page = content[offset : offset + size]

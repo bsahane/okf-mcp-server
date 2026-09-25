@@ -39,7 +39,7 @@ Common approaches:
 | Managed cloud DB (RDS, Cloud SQL, Azure DB) | Hybrid deployments or when the cluster is not self-hosted |
 | Standalone PostgreSQL Pod | Quick testing only — not recommended for production |
 
-Update these values in `deployment/openshift/secret.yaml` before deploying:
+Update these values in `deployment/base/secret.yaml` before deploying:
 
 ```yaml
 POSTGRES_DB: "your-db-name"
@@ -47,13 +47,13 @@ POSTGRES_USER: "your-db-user"
 POSTGRES_PASSWORD: "your-secure-password"
 ```
 
-The MCP server also needs `POSTGRES_HOST` and `POSTGRES_PORT` — set these in `deployment/openshift/configmap.yaml` to match your database endpoint.
+The MCP server also needs `POSTGRES_HOST` and `POSTGRES_PORT` — set these in `deployment/base/configmap.yaml` to match your database endpoint.
 
 > **Without auth:** If `ENABLE_AUTH=False`, PostgreSQL is not required and the `POSTGRES_*` values are ignored.
 
 ## Container Build (`Containerfile`)
 
-The `Containerfile` uses a multi-stage approach on a Red Hat UBI base:
+The `Containerfile` is a single stage on a Red Hat UBI base (`--build-arg EXTRAS=ingest` adds Docling, CPU PyTorch and baked models for the ingest image):
 
 | Stage | What Happens |
 |-------|-------------|
@@ -61,7 +61,7 @@ The `Containerfile` uses a multi-stage approach on a Red Hat UBI base:
 | **Dependency install** | Switches to `root`, copies `pyproject.toml`, installs `uv`, creates a venv, and installs runtime deps via `uv pip install -r pyproject.toml` |
 | **Source copy** | Copies `okf_mcp_server/` into `/app` (dev deps and tests are excluded) |
 | **Environment** | Sets `VIRTUAL_ENV`, prepends venv to `PATH`, sets `PYTHONPATH=/app` |
-| **User** | Drops back to `default` (non-root) for runtime security |
+| **User** | Runs as UID `1001` (non-root; OpenShift assigns its own UID) |
 | **Entrypoint** | `CMD ["/app/.venv/bin/python", "-m", "okf_mcp_server.src.main"]` |
 
 Port **5001** is exposed via `EXPOSE 5001`.

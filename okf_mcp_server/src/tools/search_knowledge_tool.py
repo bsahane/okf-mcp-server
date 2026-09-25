@@ -46,13 +46,13 @@ def search_knowledge(
     Raises:
         ToolError: For empty or oversized queries, or an unusable index.
     """
-    if not isinstance(query, str) or not query.strip():
-        raise ToolError("query must be a non-empty string")
-    if len(query) > MAX_QUERY_CHARS:
-        raise ToolError(f"query must be at most {MAX_QUERY_CHARS} characters")
     identity = caller()
-    snapshot = open_snapshot()
     try:
+        if not isinstance(query, str) or not query.strip():
+            raise ToolError("query must be a non-empty string")
+        if len(query) > MAX_QUERY_CHARS:
+            raise ToolError(f"query must be at most {MAX_QUERY_CHARS} characters")
+        snapshot = open_snapshot()
         with SearchIndex(snapshot.index, embedder=search_embedder()) as index:
             mode = index.mode
             if index.snapshot_id() != snapshot.id:
@@ -65,7 +65,14 @@ def search_knowledge(
                 principals=principals_for(identity),
                 default_access=settings.OKF_DEFAULT_ACCESS,
             )
-    except SearchIndexError as e:
+    except (SearchIndexError, ToolError) as e:
+        audit(
+            "search_knowledge",
+            identity,
+            query=str(query)[:200],
+            outcome="error",
+            error=str(e),
+        )
         raise ToolError(str(e)) from e
 
     logger.info(f"search_knowledge returned {len(results)} results")

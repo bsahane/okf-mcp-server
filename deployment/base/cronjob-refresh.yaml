@@ -23,6 +23,16 @@ spec:
             component: refresh
         spec:
           restartPolicy: Never
+          # Run on the server's node so a ReadWriteOnce PVC can be shared;
+          # with a ReadWriteMany storage class this can be removed.
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - labelSelector:
+                    matchLabels:
+                      app: okf-mcp-server
+                      component: mcp-server
+                  topologyKey: kubernetes.io/hostname
           securityContext:
             runAsNonRoot: true
             seccompProfile:

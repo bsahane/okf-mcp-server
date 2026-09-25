@@ -106,9 +106,11 @@ def load_config(source_root: Path) -> Dict[str, Any]:
     if not isinstance(config, dict):
         raise ValueError(f"{CONFIG_FILE} must be a mapping")
     for key in ("types", "documents", "access"):
-        if not isinstance(config.get(key, {}), dict):
+        if not isinstance(config.get(key) or {}, dict):
             raise ValueError(f"{CONFIG_FILE}: `{key}` must be a mapping")
     for prefix, rule in (config.get("access") or {}).items():
+        if rule is None:
+            raise ValueError(f"{CONFIG_FILE}: access[{prefix!r}] is empty")
         try:
             normalize_access(rule)
         except (ValueError, TypeError, AttributeError) as e:
@@ -121,6 +123,9 @@ def load_config(source_root: Path) -> Dict[str, Any]:
                 f"{CONFIG_FILE}: documents[{rel!r}].status must be one of {STATUSES}"
             )
         if "access" in doc:
+            if doc["access"] is None:
+                # An empty entry would drop the folder rule and fall back to the default.
+                raise ValueError(f"{CONFIG_FILE}: documents[{rel!r}].access is empty")
             try:
                 normalize_access(doc["access"])
             except (ValueError, TypeError, AttributeError) as e:

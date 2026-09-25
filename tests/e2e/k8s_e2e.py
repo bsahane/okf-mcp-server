@@ -1,4 +1,4 @@
-"""End-to-end check of the Kubernetes deployment (the `deployment/kubernetes` overlay).
+"""End-to-end check of the Kubernetes or OpenShift deployment (`deployment/<overlay>`).
 
 In a throwaway namespace it deploys Keycloak and PostgreSQL (test-only), then
 the real manifests with generated secrets, and checks:
@@ -10,8 +10,16 @@ the real manifests with generated secrets, and checks:
 - a second refresh after a source change is served without a restart
 - tool calls and ingestion are audited
 
-Usage: python tests/e2e/k8s_e2e.py [--context orbstack] [--image okf-mcp-server:dev]
-Requires kubectl, a cluster that can use the local image, and the Keycloak image.
+Usage:
+  python tests/e2e/k8s_e2e.py [--context orbstack] [--image okf-mcp-server:dev]
+  python tests/e2e/k8s_e2e.py --platform openshift --context <ctx> --build [--namespace <project>]
+
+Kubernetes: needs kubectl and a cluster that can use the local image.
+OpenShift: needs kubectl and oc logged in (`oc login`); `--build` builds the server
+and ingest images in the cluster from the tracked files (BuildConfigs), the pods run
+under restricted-v2 with the project's UID range, and the Route is checked. Use
+`--namespace` where you cannot create projects (Developer Sandbox); only the
+objects this test creates are deleted from it.
 """
 
 import argparse
@@ -38,6 +46,7 @@ from auth_e2e import (  # noqa: E402  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 UID = 1000650000
+SCLORG_POSTGRES_IMAGE = "quay.io/sclorg/postgresql-15-c9s"  # runs as any UID
 SOURCES = {
     "finance-travel.md": (
         "finance/travel.md",
@@ -85,7 +94,11 @@ class Kube:
 
 
 def infra(
-    passwords: dict, client_secret: str, admin_password: str, pg_password: str
+    passwords: dict,
+    client_secret: str,
+    admin_password: str,
+    pg_password: str,
+    openshift: bool = False,
 ) -> list:
     """Keycloak and PostgreSQL for the test (not part of the product manifests)."""
     realm_json = json.dumps(realm(client_secret, passwords))
@@ -108,6 +121,10 @@ def infra(
             "imagePullPolicy": "IfNotPresent",
             "env": [{"name": k, "value": v} for k, v in env.items()],
             "ports": [{"containerPort": p} for p in ports],
+            "resources": {
+                "requests": {"memory": "256Mi", "cpu": "100m"},
+                "limits": {"memory": "1536Mi", "cpu": "1"},
+            },
         }
         if args:
             container["args"] = args
@@ -174,8 +191,14 @@ def infra(
         service("keycloak", 8080),
         deployment(
             "postgres",
-            POSTGRES_IMAGE,
+            SCLORG_POSTGRES_IMAGE if openshift else POSTGRES_IMAGE,
             {
+                "POSTGRESQL_USER": "okf",
+                "POSTGRESQL_PASSWORD": pg_password,
+                "POSTGRESQL_DATABASE": "okf",
+            }
+            if openshift
+            else {
                 "POSTGRES_USER": "okf",
                 "POSTGRES_PASSWORD": pg_password,
                 "POSTGRES_DB": "okf",
@@ -207,16 +230,22 @@ def product(
     pg_password: str,
     sources: dict,
     ingest_image: str = "",
+    platform: str = "kubernetes",
+    docx: bool = False,
 ) -> list:
-    """The deployment/kubernetes overlay, filled in for this cluster."""
+    """The deployment/<platform> overlay, filled in for this cluster.
+
+    An empty `image` keeps the overlay's images (OpenShift: the ImageStream tags
+    built in the cluster). On OpenShift the UID is left to the SCC.
+    """
+    docx = docx or bool(ingest_image)
     rendered = subprocess.run(
-        ["kubectl", "kustomize", str(ROOT / "deployment" / "kubernetes")],
+        ["kubectl", "kustomize", str(ROOT / "deployment" / platform)],
         capture_output=True,
         text=True,
         check=True,
     ).stdout
     docs = [d for d in yaml.safe_load_all(rendered) if d]
-    name, tag = image.rsplit(":", 1)
     kc = "http://keycloak:8080/realms/okf/protocol/openid-connect"
     for doc in docs:
         kind, meta = doc["kind"], doc["metadata"]["name"]
@@ -250,18 +279,18 @@ def product(
                 if kind == "Deployment"
                 else doc["spec"]["jobTemplate"]["spec"]["template"]["spec"]
             )
-            spec["securityContext"].update({"runAsUser": UID, "runAsGroup": 0})
+            if platform == "kubernetes":
+                spec["securityContext"].update({"runAsUser": UID, "runAsGroup": 0})
             for c in spec["containers"]:
-                c["image"] = (
-                    ingest_image
-                    if (kind == "CronJob" and ingest_image)
-                    else f"{name}:{tag}"
-                )
+                if kind == "CronJob" and ingest_image:
+                    c["image"] = ingest_image
+                elif image:
+                    c["image"] = image
             if kind == "CronJob":
                 for v in spec["volumes"]:
                     if v["name"] == "sources":
                         items = [{"key": k, "path": p} for k, (p, _) in sources.items()]
-                        if ingest_image:
+                        if docx:
                             items.append(
                                 {
                                     "key": "finance-hotel-guide.docx",
@@ -284,7 +313,7 @@ def product(
         "metadata": {"name": "okf-e2e-sources"},
         "data": {k: text for k, (_, text) in sources.items()},
     }
-    if ingest_image:
+    if docx:
         import base64
 
         source_map["binaryData"] = {
@@ -292,6 +321,20 @@ def product(
         }
     docs.append(source_map)
     return docs
+
+
+def source_archive() -> Path:
+    """Tracked files incl. uncommitted changes (never .venv or data/), for oc start-build."""
+    ref = subprocess.run(
+        ["git", "stash", "create"], cwd=ROOT, capture_output=True, text=True
+    ).stdout.strip()
+    archive = Path("/tmp") / f"okf-e2e-src-{secrets.token_hex(3)}.tar.gz"
+    subprocess.run(
+        ["git", "archive", "--format=tar.gz", "-o", str(archive), ref or "HEAD"],
+        cwd=ROOT,
+        check=True,
+    )
+    return archive
 
 
 def free_port() -> int:
@@ -303,7 +346,22 @@ def free_port() -> int:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--context", default="orbstack")
-    parser.add_argument("--image", default="okf-mcp-server:dev")
+    parser.add_argument(
+        "--platform", choices=("kubernetes", "openshift"), default="kubernetes"
+    )
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="server image (default: okf-mcp-server:dev; OpenShift: the ImageStream)",
+    )
+    parser.add_argument(
+        "--namespace", help="use this existing namespace/project instead of a new one"
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="OpenShift: build the server and ingest images with the BuildConfigs",
+    )
     parser.add_argument(
         "--keep", action="store_true", help="keep the namespace for inspection"
     )
@@ -313,28 +371,100 @@ def main() -> int:
         help="run the refresh CronJob with this image and add a DOCX source",
     )
     args = parser.parse_args()
-    namespace = f"okf-e2e-{secrets.token_hex(3)}"
+    openshift = args.platform == "openshift"
+    if args.image is None:
+        args.image = "" if openshift else "okf-mcp-server:dev"
+    if openshift and not (args.build or args.image):
+        parser.error("--platform openshift needs --build or --image")
+    docx = bool(args.ingest_image) or (openshift and args.build)
+    namespace = args.namespace or f"okf-e2e-{secrets.token_hex(3)}"
     passwords = {u: secrets.token_urlsafe(12) for u in ("alice", "bob", "carol")}
     client_secret, admin_password, pg_password = (
         secrets.token_urlsafe(18) for _ in range(3)
     )
     kube = Kube(args.context, namespace)
     forward = None
-    try:
-        subprocess.run(
-            ["kubectl", "--context", args.context, "create", "namespace", namespace],
-            check=True,
-            capture_output=True,
+    applied: list = []
+
+    def render(sources: dict) -> list:
+        return product(
+            args.image,
+            client_secret,
+            pg_password,
+            sources,
+            args.ingest_image,
+            args.platform,
+            docx,
         )
+
+    try:
+        if not args.namespace:
+            create = (
+                [
+                    "oc",
+                    "--context",
+                    args.context,
+                    "new-project",
+                    namespace,
+                    "--skip-config-write",
+                ]
+                if openshift
+                else [
+                    "kubectl",
+                    "--context",
+                    args.context,
+                    "create",
+                    "namespace",
+                    namespace,
+                ]
+            )
+            subprocess.run(create, check=True, capture_output=True)
         print(f"namespace {namespace}: deploying Keycloak and PostgreSQL ...")
-        kube.apply(infra(passwords, client_secret, admin_password, pg_password))
+        applied += infra(
+            passwords, client_secret, admin_password, pg_password, openshift
+        )
+        kube.apply(applied)
         kube.run("rollout", "status", "deploy/keycloak", "--timeout=420s", timeout=460)
         kube.run("rollout", "status", "deploy/postgres", "--timeout=180s", timeout=200)
 
+        docs = render(SOURCES)
+        if openshift and args.build:
+            builds = [d for d in docs if d["kind"] in ("ImageStream", "BuildConfig")]
+            applied += builds
+            kube.apply(builds)
+            archive = source_archive()
+            try:
+                for bc in ("okf-mcp-server", "okf-mcp-server-ingest"):
+                    print(
+                        f"building {bc} in the cluster (the ingest image takes a while) ..."
+                    )
+                    out = subprocess.run(
+                        [
+                            "oc",
+                            "--context",
+                            args.context,
+                            "-n",
+                            namespace,
+                            "start-build",
+                            bc,
+                            f"--from-archive={archive}",
+                            "--wait",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=3600,
+                    )
+                    check(
+                        f"in-cluster build {bc}", out.returncode == 0, out.stderr[-800:]
+                    )
+                    if out.returncode:
+                        return 1
+            finally:
+                archive.unlink(missing_ok=True)
+
         print("deploying the okf manifests ...")
-        kube.apply(
-            product(args.image, client_secret, pg_password, SOURCES, args.ingest_image)
-        )
+        applied += docs
+        kube.apply(docs)
         kube.run("create", "job", "--from=cronjob/okf-refresh", "refresh-1")
         done = kube.run(
             "wait",
@@ -348,7 +478,7 @@ def main() -> int:
         check(
             "refresh Job (from the CronJob) syncs the share and publishes",
             "condition met" in done
-            and f"synced share: {4 if args.ingest_image else 3} downloaded" in logs
+            and f"synced share: {4 if docx else 3} downloaded" in logs
             and "published" in logs
             and "FAILED" not in logs,
             logs[-600:],
@@ -358,17 +488,58 @@ def main() -> int:
         )
 
         uid = kube.run("exec", "deploy/okf-mcp-server", "--", "id", "-u")
-        check(f"server runs as arbitrary UID {UID}", uid == str(UID), uid)
+        if openshift:
+            # restricted-v2 assigns a UID from the project's range, e.g. "1000650000/10000".
+            uid_range = kube.run(
+                "get",
+                "namespace",
+                namespace,
+                "-o",
+                "jsonpath={.metadata.annotations.openshift\\.io/sa\\.scc\\.uid-range}",
+                check_rc=False,
+            )
+            start, _, size = uid_range.partition("/")
+            ok = (
+                int(start) <= int(uid) < int(start) + int(size)
+                if start.isdigit() and size.isdigit()
+                else int(uid) >= 1000000000
+            )
+            check(
+                f"server runs with a UID from the SCC range ({uid_range or '?'})",
+                ok,
+                uid,
+            )
+            host = kube.run(
+                "get", "route/okf-mcp-server", "-o", "jsonpath={.spec.host}"
+            )
+            import httpx
+
+            # verify=False: clusters often use a self-signed router certificate.
+            health = httpx.get(f"https://{host}/health", verify=False, timeout=15)
+            unauth = httpx.post(
+                f"https://{host}/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                headers={"Accept": "application/json, text/event-stream"},
+                verify=False,
+                timeout=15,
+            )
+            check(
+                f"Route https://{host} serves /health and requires a token on /mcp",
+                health.status_code == 200 and unauth.status_code == 401,
+                f"{health.status_code} {unauth.status_code}",
+            )
+        else:
+            check(f"server runs as arbitrary UID {UID}", uid == str(UID), uid)
         ro = kube.run(
             "exec",
             "deploy/okf-mcp-server",
             "--",
             "sh",
             "-c",
-            "touch /app/x 2>&1 || echo read-only",
+            "awk '$2==\"/\"{print $4}' /proc/mounts",
             check_rc=False,
         )
-        check("root filesystem is read-only", "read-only" in ro.lower(), ro)
+        check("root filesystem is read-only", "ro" in ro.split(","), ro)
         cron = json.loads(kube.run("get", "cronjob/okf-refresh", "-o", "json"))
         check(
             "refresh CronJob is scheduled, one run at a time",
@@ -430,13 +601,13 @@ def main() -> int:
         alice, bob = token("alice"), token("bob")
         seen = visible(alice)
         finance = {"share/finance/travel", "share/public/handbook"}
-        if args.ingest_image:
+        if docx:
             finance.add(
                 "share/finance/hotel-guide"
             )  # the DOCX, converted by Docling in the Job
         check(
             "alice (finance) sees finance + public"
-            + (" incl. the Docling-converted DOCX" if args.ingest_image else ""),
+            + (" incl. the Docling-converted DOCX" if docx else ""),
             seen == finance,
             str(seen),
         )
@@ -456,9 +627,7 @@ def main() -> int:
         kube.apply(
             [
                 d
-                for d in product(
-                    args.image, client_secret, pg_password, sources, args.ingest_image
-                )
+                for d in render(sources)
                 if d["kind"] in ("CronJob", "ConfigMap")
                 and d["metadata"]["name"] in ("okf-refresh", "okf-e2e-sources")
             ]
@@ -505,7 +674,28 @@ def main() -> int:
     finally:
         if forward:
             forward.terminate()
-        if not args.keep:
+        if args.keep:
+            print(f"kept namespace {namespace}")
+        elif args.namespace:  # shared project: delete only what this test created
+            kube.run(
+                "delete",
+                "-f",
+                "-",
+                "--ignore-not-found",
+                "--wait=false",
+                stdin=yaml.safe_dump_all(applied),
+                check_rc=False,
+            )
+            kube.run(
+                "delete",
+                "job,build" if openshift else "job",
+                "-l",
+                "app=okf-mcp-server",
+                "--ignore-not-found",
+                "--wait=false",
+                check_rc=False,
+            )
+        else:
             subprocess.run(
                 [
                     "kubectl",

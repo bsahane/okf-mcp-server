@@ -609,6 +609,15 @@ class TestEvaluateAndCli:
         assert result["hit_at_5"] == 1.0
         assert result["questions"][1]["all_found"] is False
 
+    def test_eval_accepts_source_file_paths(self, published, tmp_path):
+        questions = tmp_path / "q.yaml"
+        questions.write_text(
+            "questions:\n"
+            "  - {question: payroll last working day, expected: [notes.txt]}\n"
+        )
+        row = evaluate(published, questions)["questions"][0]
+        assert row["expected"] == ["notes"] and row["hit"]
+
     def test_cli_build_validate_eval(self, corpus, tmp_path, capsys):
         data = tmp_path / "data"
         assert cli_main(["--data-dir", str(data), "build", str(corpus)]) == 0

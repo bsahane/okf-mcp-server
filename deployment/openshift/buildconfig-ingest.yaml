@@ -1,0 +1,34 @@
+# The ingest image (EXTRAS=ingest: Docling, CPU PyTorch, baked models) for the
+# refresh CronJob, so PDF and Office sources convert in the cluster.
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: okf-mcp-server-ingest
+  labels:
+    app: okf-mcp-server
+    component: refresh
+spec:
+  successfulBuildsHistoryLimit: 1
+  failedBuildsHistoryLimit: 1
+  output:
+    to:
+      kind: ImageStreamTag
+      name: okf-mcp-server:ingest
+  source:
+    type: Binary
+    binary: {}
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Containerfile
+      buildArgs:
+        - name: EXTRAS
+          value: ingest
+  resources:
+    requests:
+      memory: "4Gi"
+      cpu: "2000m"
+    limits:
+      memory: "8Gi"
+      cpu: "8"
+  triggers: []

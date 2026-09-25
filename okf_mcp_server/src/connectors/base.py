@@ -16,10 +16,13 @@ import json
 import os
 import re
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, Iterable, List, Optional
+
+import httpx
 
 from okf_mcp_server.src.ingest.extract import SUPPORTED_SUFFIXES
 
@@ -84,15 +87,40 @@ def safe_relpath(path: str) -> str:
         if part.startswith("."):
             part = "_" + part.lstrip(".")
         if part:
-            parts.append(part[:200])
+            parts.append(_truncate(part))
     if not parts:
         raise ValueError(f"unusable remote path: {path!r}")
     return "/".join(parts)
 
 
+def _truncate(name: str, limit: int = 200) -> str:
+    """Fit a name in `limit` UTF-8 bytes, keeping its extension."""
+    if len(name.encode()) <= limit:
+        return name
+    stem, dot, suffix = name.rpartition(".")
+    if not dot or len(suffix) > 10:
+        stem, suffix = name, ""
+    else:
+        suffix = "." + suffix
+    budget = limit - len(suffix.encode())
+    return stem.encode()[:budget].decode(errors="ignore").rstrip() + suffix
+
+
+def fold(rel: str) -> str:
+    """The name as case-insensitive, normalizing filesystems (APFS, NTFS, SMB) see it."""
+    return unicodedata.normalize("NFC", rel).casefold()
+
+
+def _error(e: Exception) -> str:
+    """Error text without URL query strings (pre-authenticated download links carry tokens)."""
+    if isinstance(e, httpx.HTTPStatusError):
+        return f"HTTPStatusError: HTTP {e.response.status_code}"
+    return re.sub(r"\?[^\s'\"]*", "?…", f"{type(e).__name__}: {e}")
+
+
 def _unique(rel: str, key: str, taken: set) -> str:
-    """Disambiguate duplicate names (Drive allows them) with the item key."""
-    if rel not in taken:
+    """Disambiguate duplicate names (Drive allows them, also by case) with the item key."""
+    if fold(rel) not in taken:
         return rel
     p = PurePosixPath(rel)
     return str(
@@ -113,8 +141,10 @@ def sync(source: str, mirror: Path, items: Iterable[RemoteItem]) -> SyncResult:
     new_state: Dict[str, Dict[str, str]] = {}
     access: Dict[str, List[str]] = {}
     taken: set = set()
+    listed = 0
 
     for item in items:
+        listed += 1
         try:
             rel = _unique(safe_relpath(item.path), item.key, taken)
         except ValueError as e:
@@ -126,7 +156,7 @@ def sync(source: str, mirror: Path, items: Iterable[RemoteItem]) -> SyncResult:
         if item.size is not None and item.size > MAX_FILE_BYTES:
             result.skipped[rel] = f"larger than {MAX_FILE_BYTES // 1024 // 1024} MB"
             continue
-        taken.add(rel)
+        taken.add(fold(rel))
         target = mirror / rel
         previous = old.get(item.key)
         if (
@@ -140,7 +170,7 @@ def sync(source: str, mirror: Path, items: Iterable[RemoteItem]) -> SyncResult:
             try:
                 _download(item, target)
             except Exception as e:  # noqa: BLE001 - one bad item must not stop the sync
-                result.errors[rel] = f"{type(e).__name__}: {e}"
+                result.errors[rel] = _error(e)
                 if previous and previous.get("path") == rel and target.is_file():
                     new_state[item.key] = previous  # keep the last good copy
                     if item.principals is not None:
@@ -151,9 +181,16 @@ def sync(source: str, mirror: Path, items: Iterable[RemoteItem]) -> SyncResult:
         if item.principals is not None:
             access[rel] = item.principals
 
-    keep = {entry["path"] for entry in new_state.values()}
+    if old and not listed:
+        # An unmounted share or unshared folder lists as empty: keep the mirror.
+        result.errors["<listing>"] = (
+            "the source listed no files; kept the previous mirror "
+            f"(delete {mirror} to empty it on purpose)"
+        )
+        return result
+    keep = {fold(entry["path"]) for entry in new_state.values()}
     for entry in old.values():
-        if entry["path"] not in keep and (mirror / entry["path"]).is_file():
+        if fold(entry["path"]) not in keep and (mirror / entry["path"]).is_file():
             (mirror / entry["path"]).unlink()
             result.deleted.append(entry["path"])
     _prune_empty_dirs(mirror)

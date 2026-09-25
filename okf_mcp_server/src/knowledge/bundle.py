@@ -169,7 +169,8 @@ def concept_path(bundle_root: Path, concept_id: str) -> Path:
     concept_id = (concept_id or "").strip().strip("/")
     if concept_id.endswith(".md"):
         concept_id = concept_id[:-3]
-    if not concept_id or concept_id.rsplit("/", 1)[-1] in ("index", "log"):
+    # Case-insensitive: on APFS/NTFS "INDEX.md" opens the unfiltered index.md.
+    if not concept_id or concept_id.rsplit("/", 1)[-1].lower() in ("index", "log"):
         raise BundleError("not a concept ID")
     path = resolve_in_bundle(bundle_root, concept_id + ".md")
     if not path.is_file():
